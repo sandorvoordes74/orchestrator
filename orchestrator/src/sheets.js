@@ -89,6 +89,7 @@ function buildColumnMap(headerRow) {
     commitDate: find(["commitmentdate", "commitment date", "commit date", "commitdate", "commit"]),
     energy: find(["energy"]),
     location: find(["location", "where"]),
+    requirements: find(["requirements", "requirement", "reqs", "needs"]),
     hasIdColumn: idCol >= 0,
     _headers: headerRow,
   };
@@ -135,6 +136,7 @@ async function getTasks() {
       commitDate: cell(row, map.commitDate),
       energy: cell(row, map.energy),
       location: cell(row, map.location),
+      requirements: cell(row, map.requirements),
     });
   }
   return { sheetName, headers, map, tasks };
@@ -191,8 +193,37 @@ const _hml = (v) => (["H", "M", "L"].includes(String(v || "").toUpperCase()) ? S
 const _taskType = (v) => (String(v || "").trim().toUpperCase() === "PRIVATE" ? "PRIVATE" : "WORK");
 // Mental energy needed (CAPS). Default MEDIUM.
 const _energy = (v) => (["LOW", "MEDIUM", "HIGH"].includes(String(v || "").trim().toUpperCase()) ? String(v).trim().toUpperCase() : "MEDIUM");
-// Where the task can be picked up (CAPS). Default ANYWHERE.
+// Where the task can be picked up (CAPS). Default ANYWHERE. (legacy — superseded by requirements)
 const _location = (v) => (["ANYWHERE", "HOME", "OFFICE", "OUT", "CALLS"].includes(String(v || "").trim().toUpperCase()) ? String(v).trim().toUpperCase() : "ANYWHERE");
+// Requirements — zero or more context tokens the task needs, stored as the sheet's
+// "AUTO: TOK1, TOK2" format (or "AUTO: NONE"). Accepts an array or a comma/semicolon
+// string of display names or tokens; normalizes each whole item to a canonical token.
+const _REQ_TOKENS = {
+  PHONE_CALL: "PHONE_CALL", CALL: "PHONE_CALL",
+  PHONE: "PHONE", MOBILE: "PHONE",
+  LAPTOP: "LAPTOP", COMPUTER: "LAPTOP", PC: "LAPTOP",
+  QUIET_PRIVACY: "QUIET_PRIVACY", QUIET: "QUIET_PRIVACY", PRIVACY: "QUIET_PRIVACY",
+  FOCUS: "FOCUS", DEEP_WORK: "FOCUS",
+  INTERNET: "INTERNET", ONLINE: "INTERNET", WIFI: "INTERNET",
+  HOME_TOOLS: "HOME_TOOLS", TOOLS: "HOME_TOOLS",
+  ERRAND: "ERRAND",
+  HANDS_FREE: "HANDS_FREE",
+  BUSINESS_HOURS: "BUSINESS_HOURS", OFFICE_HOURS: "BUSINESS_HOURS",
+  DAYLIGHT: "DAYLIGHT", DAYTIME: "DAYLIGHT",
+  NONE: "NONE",
+};
+function _requirements(v) {
+  let items = [];
+  if (Array.isArray(v)) items = v;
+  else if (typeof v === "string") items = v.replace(/^\s*AUTO:\s*/i, "").split(/[,;]+/);
+  const out = [];
+  for (const it of items) {
+    const key = String(it).trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    const tok = _REQ_TOKENS[key];
+    if (tok && tok !== "NONE" && !out.includes(tok)) out.push(tok);
+  }
+  return "AUTO: " + (out.length ? out.join(", ") : "NONE");
+}
 const _today = () => new Date().toISOString().slice(0, 10);
 const _colLetter = (i) => String.fromCharCode(65 + i); // fine for our <26-col sheet
 
@@ -275,7 +306,7 @@ async function appendTask(task) {
   const headers = await readHeaders(sheetName);
   const m = buildColumnMap(headers);
 
-  const present = [m.id, m.reviewDate, m.label, m.task, m.context, m.prio, m.deadline, m.importance, m.createdDate, m.effort, m.urgency, m.urgencySetDate, m.taskType, m.commitDate, m.energy, m.location].filter((i) => i >= 0);
+  const present = [m.id, m.reviewDate, m.label, m.task, m.context, m.prio, m.deadline, m.importance, m.createdDate, m.effort, m.urgency, m.urgencySetDate, m.taskType, m.commitDate, m.energy, m.requirements].filter((i) => i >= 0);
   const row = new Array(Math.max(...present) + 1).fill("");
   const set = (i, v) => { if (i >= 0) row[i] = v; };
   const id = crypto.randomUUID().slice(0, 8);
@@ -295,7 +326,7 @@ async function appendTask(task) {
   set(m.taskType, _taskType(task.taskType)); // WORK | PRIVATE — drives day/time-of-week prioritization
   set(m.commitDate, toSheetDate(task.commitDate)); // intended date to work on it; blank unless stated
   set(m.energy, _energy(task.energy)); // LOW | MEDIUM | HIGH — mental energy needed
-  set(m.location, _location(task.location)); // ANYWHERE | HOME | OFFICE | OUT | CALLS — where it can be done
+  set(m.requirements, _requirements(task.requirements)); // "AUTO: TOK,.." context needs (supersedes location)
 
   // RAW so date strings stay literal text (USER_ENTERED would coerce ISO to a serial).
   await sheets.spreadsheets.values.append({
@@ -358,7 +389,7 @@ async function updateTaskFields(taskId, fields) {
   if (has("importance")) push(m.importance, "importance", _hml(f.importance));
   if (has("effort")) push(m.effort, "effort", _hml(f.effort));
   if (has("energy")) push(m.energy, "energy", _energy(f.energy));
-  if (has("location")) push(m.location, "location", _location(f.location));
+  if (has("requirements")) push(m.requirements, "requirements", _requirements(f.requirements));
   if (has("taskType")) push(m.taskType, "taskType", _taskType(f.taskType));
   // Urgency is a matrix input; re-asserting it resets the urgency clock (urgencySetDate=today).
   let bumpUrgency = false;

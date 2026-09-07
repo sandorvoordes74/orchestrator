@@ -131,7 +131,7 @@ async function cmdMatch(jsonText) {
     // Exact URL match is strongest; rare shared ids next; word overlap catches
     // cross-source relations (same client/person/deliverable in a different channel).
     const score = sharedUrls * 1.2 + keyScore * 1.0 + wordJaccard * 0.9;
-    return { id: t.id, task: t.task, label: t.label, taskType: t.taskType, deadline: t.deadline || "", reviewDate: t.reviewDate || "", commitDate: t.commitDate || "", energy: t.energy || "", location: t.location || "", score: +score.toFixed(3), sharedUrls, sharedIdKeys: sharedKeys.length, sharedWords: shared };
+    return { id: t.id, task: t.task, label: t.label, taskType: t.taskType, deadline: t.deadline || "", reviewDate: t.reviewDate || "", commitDate: t.commitDate || "", energy: t.energy || "", requirements: t.requirements || "", score: +score.toFixed(3), sharedUrls, sharedIdKeys: sharedKeys.length, sharedWords: shared };
   }).filter((c) => c.score > 0.2 || c.sharedUrls > 0)
     .sort((a, b) => b.score - a.score).slice(0, 6);
   process.stdout.write(JSON.stringify({ candidates: scored }, null, 2) + "\n");
@@ -265,10 +265,10 @@ async function cmdPromote() {
 // Tag-driven mode: one curated item -> straight into Tasks (new or append) + logged.
 // No Staging/approval. The agent decides append-vs-new (via context) and passes appendToId
 // for matches; guards keep it safe. JSON fields: task, label, importance, urgency, effort,
-// energy (LOW|MEDIUM|HIGH), location (ANYWHERE|HOME|OFFICE|OUT|CALLS), deadline, reviewDate,
+// energy (LOW|MEDIUM|HIGH), requirements (array/string of context tokens), deadline, reviewDate,
 // commitDate, taskType (WORK|PRIVATE), sourceUrls[], appendToId?, updatedTitle?, fieldUpdates?
 //  - On APPEND: updatedTitle rewrites the existing task's title; fieldUpdates {deadline,
-//    reviewDate, commitDate, importance, urgency, effort, energy, location, taskType, label}
+//    reviewDate, commitDate, importance, urgency, effort, energy, requirements, taskType, label}
 //    changes only the listed fields (e.g. a final-notice email adding a deadline).
 async function cmdUpsert(jsonText) {
   let d;
@@ -309,7 +309,7 @@ async function cmdUpsert(jsonText) {
     const id = await appendTask({
       task: title, label: d.label, importance: d.importance, urgency: d.urgency,
       effort: d.effort, deadline: d.deadline, reviewDate: d.reviewDate, commitDate: d.commitDate,
-      sourceUrls: urls, taskType: d.taskType, energy: d.energy, location: d.location,
+      sourceUrls: urls, taskType: d.taskType, energy: d.energy, requirements: d.requirements,
     });
     result = { action: "new", id, task: title };
   }

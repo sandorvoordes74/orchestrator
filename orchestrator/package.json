@@ -1,0 +1,14 @@
+{
+  "name": "task-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "AI task orchestrator: ingests sources (Gmail v1) and syncs tasks into the Google Sheet. Runs as a nightly claude.ai cloud routine.",
+  "scripts": {
+    "read": "node src/read.js",
+    "write": "node src/write.js"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}

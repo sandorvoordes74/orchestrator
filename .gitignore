@@ -1,0 +1,40 @@
+# OS / editor
+.DS_Store
+
+# Claude Code local config & skills
+.claude/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# OpenSpec specs — kept LOCAL only (contain ids/architecture); not in the public repo
+/openspec/
+
+# Local reference copy of the existing Replit app — kept locally, not part of the orchestrator
+/replit-code/
+
+# OAuth fallback spike — kept locally; the deployed orchestrator uses MCP + service account
+/spike/
+
+# NEVER commit credentials. The service-account key lives ONLY in the routine Instructions.
+service-account*.json
+*-key.json
+*credentials*.json
+*.pem
+.env
+.env.*
+# Google Cloud service-account key files (e.g. <project>-<hash>.json)
+task-manager-*.json
+*-7d39ba7023a8.json
+sa-key.json
+
+# Code bundle for Drive delivery (not for the public repo)
+*.tgz
+
+# Local dev tool (not part of the bundle)
+orchestrator/upload-bundle.js
+
+orchestrator/mint-gmail2-token.js

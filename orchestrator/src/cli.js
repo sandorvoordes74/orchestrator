@@ -323,11 +323,14 @@ async function cmdUpsert(jsonText) {
 }
 
 // List every `TODO:` line across the configured Google Docs, for the agent to enrich.
-async function cmdDocsScan() {
+// Scan configured Google Docs for `TODO:` lines. Docs come from the docs-scan
+// arguments (one or more URLs/ids) when given, else the GOOGLE_DOCS env var.
+async function cmdDocsScan(argDocs) {
   const { GOOGLE_DOCS } = require("./config");
   const { docIdFromUrl, docUrl, listTodoItems } = require("./docs");
+  const docsList = (argDocs && argDocs.length) ? argDocs : GOOGLE_DOCS;
   const out = [];
-  for (const entry of GOOGLE_DOCS) {
+  for (const entry of docsList) {
     const id = docIdFromUrl(entry);
     try {
       const items = (await listTodoItems(id)).map((it) => ({
@@ -379,7 +382,7 @@ async function main() {
     if (!id) throw new Error("gmail2-relabel: provide a threadId");
     await cmdGmail2Relabel(id);
   } else if (cmd === "docs-scan") {
-    await cmdDocsScan();
+    await cmdDocsScan(process.argv.slice(3));
   } else if (cmd === "docs-mark") {
     const arg = process.argv[3];
     const jsonText = arg && arg.trim() ? arg : await readStdin();

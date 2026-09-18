@@ -6,16 +6,15 @@
 //   GMAIL2_CLIENT_ID, GMAIL2_CLIENT_SECRET, GMAIL2_REFRESH_TOKEN
 // Same tag-driven flow: read label:todo, then relabel todo->listed.
 
-const { google } = require("googleapis");
+const G = require("./google");
 
 function isConfigured() {
   return !!(process.env.GMAIL2_CLIENT_ID && process.env.GMAIL2_CLIENT_SECRET && process.env.GMAIL2_REFRESH_TOKEN);
 }
 
 function gmail() {
-  const c = new google.auth.OAuth2(process.env.GMAIL2_CLIENT_ID, process.env.GMAIL2_CLIENT_SECRET);
-  c.setCredentials({ refresh_token: process.env.GMAIL2_REFRESH_TOKEN });
-  return google.gmail({ version: "v1", auth: c });
+  return G.gmailClient(() => G.refreshAccessToken(
+    process.env.GMAIL2_CLIENT_ID, process.env.GMAIL2_CLIENT_SECRET, process.env.GMAIL2_REFRESH_TOKEN));
 }
 
 const header = (hs, n) => ((hs || []).find((h) => h.name.toLowerCase() === n.toLowerCase()) || {}).value || "";

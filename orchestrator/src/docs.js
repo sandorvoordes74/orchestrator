@@ -4,11 +4,12 @@
 // `LISTED:` after processing. Uses the same service account as the sheet (each
 // doc must be shared with the SA, and the Docs API enabled in the project).
 
-const { google } = require("googleapis");
-const { getAuth } = require("./sheets");
+const G = require("./google");
+const { saToken } = require("./sheets");
+const { SCOPES } = require("./config");
 
 function getDocsClient() {
-  return google.docs({ version: "v1", auth: getAuth() });
+  return G.docsClient(saToken || (() => G.saAccessToken(SCOPES)));
 }
 
 // Accept a full Docs URL or a bare document id.

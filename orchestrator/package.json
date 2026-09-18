@@ -8,7 +8,5 @@
     "read": "node src/read.js",
     "write": "node src/write.js"
   },
-  "dependencies": {
-    "googleapis": "^144.0.0"
-  }
+  "dependencies": {}
 }

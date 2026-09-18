@@ -1,39 +1,19 @@
 "use strict";
 
-const { google } = require("googleapis");
+const G = require("./google");
 const { SPREADSHEET_ID, TASKS_TAB, SCOPES } = require("./config");
 
 // --- Auth -------------------------------------------------------------------
-// Accepts the service-account key as:
-//   GOOGLE_SERVICE_ACCOUNT_KEY  = raw JSON  OR base64-encoded JSON  (used by the
-//                                 cloud routine, where the key is base64 in the
-//                                 routine Instructions and exported to this var)
-//   GOOGLE_APPLICATION_CREDENTIALS = path to a key file (handy for local testing)
-function loadInlineCredentials() {
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
-  if (!raw || !raw.trim()) return null;
-  let text = raw.trim();
-  if (!text.startsWith("{")) {
-    // assume base64
-    text = Buffer.from(text, "base64").toString("utf8");
-  }
-  return JSON.parse(text);
-}
-
-function getAuth() {
-  const credentials = loadInlineCredentials();
-  if (credentials) {
-    return new google.auth.GoogleAuth({ credentials, scopes: SCOPES });
-  }
-  // Falls back to GOOGLE_APPLICATION_CREDENTIALS file path / ADC.
-  return new google.auth.GoogleAuth({ scopes: SCOPES });
-}
+// Auth + transport live in ./google (zero-dependency, Node built-ins only). The
+// service-account key comes from GOOGLE_SERVICE_ACCOUNT_KEY (raw JSON or base64) or
+// a key-file path in GOOGLE_APPLICATION_CREDENTIALS. Shared SA access token (cached)
+// is used for both Sheets and Docs.
+const saToken = () => G.saAccessToken(SCOPES);
 
 let _sheets = null;
 async function getSheetsClient() {
   if (_sheets) return _sheets;
-  const auth = getAuth();
-  _sheets = google.sheets({ version: "v4", auth });
+  _sheets = G.sheetsClient(saToken);
   return _sheets;
 }
 
@@ -452,7 +432,7 @@ async function rewriteStagingRows(rows) {
 }
 
 module.exports = {
-  getAuth,
+  saToken,
   getSheetsClient,
   listTabs,
   getTasksTabName,

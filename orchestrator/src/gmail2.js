@@ -88,6 +88,30 @@ async function relabel(threadId) {
   return { updated: true };
 }
 
+// Read-only overview of the private inbox backlog: threads still in the inbox that are
+// neither tagged todo nor already listed. Used by the day program to size an
+// inbox-processing block. Headers only (no bodies).
+async function inboxOverview(max = 25) {
+  const g = gmail();
+  const q = "in:inbox -label:todo -label:listed";
+  const list = await g.users.threads.list({ userId: "me", q, maxResults: max });
+  const threads = list.data.threads || [];
+  const items = [];
+  for (const th of threads) {
+    const t = await g.users.threads.get({ userId: "me", id: th.id, format: "metadata" });
+    const msgs = t.data.messages || [];
+    const last = msgs[msgs.length - 1] || { payload: {} };
+    items.push({
+      subject: header(last.payload.headers, "Subject") || "(no subject)",
+      from: header(last.payload.headers, "From"),
+      date: header(last.payload.headers, "Date"),
+      unread: (last.labelIds || []).includes("UNREAD"),
+      messages: msgs.length,
+    });
+  }
+  return { query: q, estimate: list.data.resultSizeEstimate || threads.length, shown: items.length, items };
+}
+
 // Send a plain-text email from the private mailbox (gmail.modify allows sending).
 // `to` defaults to the mailbox's own address.
 async function sendMail({ to, subject, text }) {
@@ -106,4 +130,4 @@ async function sendMail({ to, subject, text }) {
   return { sent: true, to: rcpt, id: r.data.id };
 }
 
-module.exports = { isConfigured, listTodo, relabel, sendMail };
+module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview };

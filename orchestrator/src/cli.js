@@ -127,9 +127,18 @@ async function cmdContext() {
 // Find existing tasks a candidate item likely "links up" with, so the agent can
 // append instead of creating a near-duplicate. Ranks by shared URLs / domains /
 // doc+thread ids AND significant-word overlap of the titles. Input JSON: {task, sourceUrls[]}.
-const _STOP = new Set("the a an of to for and or in on at with from by is are be as your you our we it this that these those re fw fwd task todo please pls check make get plan do new update via about into over per".split(" "));
+const _STOP = new Set("the a an of to for and or in on at with from by is are be as your you our we it this that these those re fw fwd task todo please pls check make get plan do new update via about into over per het een van voor met naar bij ook dit die dat wat nog maar als".split(" "));
 function _words(s) {
   return [...new Set(String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 2 && !_STOP.has(w)))];
+}
+// Loose word equivalence for stems/plurals/compounds across languages: one word is a
+// prefix of the other ("hor"~"horren", "kado"~"kadootje", "invoice"~"invoices"). A 3-letter
+// stem only matches short extensions so it doesn't swallow unrelated long words.
+function _wordLike(a, b) {
+  if (a === b) return true;
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+  if (!l.startsWith(s)) return false;
+  return s.length >= 4 || l.length - s.length <= 3;
 }
 function _urlIdKeys(u) {
   // Identifying tokens only (doc id, thread id, message ts) — NOT the host, which is
@@ -160,12 +169,17 @@ async function cmdMatch(jsonText) {
     for (const k of candKeys) if (taskKeys[i].has(k)) { keyScore += 1 / df[k]; if (df[k] <= 4) sharedKeys.push(k); }
     const tw = _words(t.task);
     const shared = tw.filter((w) => candWords.includes(w));
-    const denom = new Set([...tw, ...candWords]).size || 1;
-    const wordJaccard = shared.length / denom;
+    // near-matches (stem/plural/prefix) count slightly less than exact ones
+    const near = tw.filter((w) => !candWords.includes(w) && candWords.some((c) => _wordLike(w, c)));
+    const denom = (new Set([...tw, ...candWords]).size - near.length) || 1;
+    const hits = shared.length + 0.8 * near.length;
+    // Jaccard alone buries short umbrella titles ("Horren") under long candidates, so
+    // also score overlap relative to the shorter title (damped).
+    const wordJaccard = Math.max(hits / denom, 0.6 * hits / (Math.min(tw.length, candWords.length) || 1));
     // Exact URL match is strongest; rare shared ids next; word overlap catches
     // cross-source relations (same client/person/deliverable in a different channel).
     const score = sharedUrls * 1.2 + keyScore * 1.0 + wordJaccard * 0.9;
-    return { id: t.id, task: t.task, label: t.label, taskType: t.taskType, deadline: t.deadline || "", reviewDate: t.reviewDate || "", commitDate: t.commitDate || "", energy: t.energy || "", requirements: t.requirements || "", score: +score.toFixed(3), sharedUrls, sharedIdKeys: sharedKeys.length, sharedWords: shared };
+    return { id: t.id, task: t.task, label: t.label, taskType: t.taskType, deadline: t.deadline || "", reviewDate: t.reviewDate || "", commitDate: t.commitDate || "", energy: t.energy || "", requirements: t.requirements || "", score: +score.toFixed(3), sharedUrls, sharedIdKeys: sharedKeys.length, sharedWords: [...shared, ...near.map((w) => w + "~")] };
   }).filter((c) => c.score > 0.2 || c.sharedUrls > 0)
     .sort((a, b) => b.score - a.score).slice(0, 6);
   process.stdout.write(JSON.stringify({ candidates: scored }, null, 2) + "\n");
@@ -356,8 +370,8 @@ async function cmdUpsert(jsonText) {
   process.stdout.write(JSON.stringify(result) + "\n");
 }
 
-// List every `TODO:` line across the configured Google Docs, for the agent to enrich.
-// Scan configured Google Docs for `TODO:` lines. Docs come from the docs-scan
+// Scan configured Google Docs for `TODO` / `TODO:` lines (a TODO line ending in ":"
+// absorbs the bullet list below it). Docs come from the docs-scan
 // arguments (one or more URLs/ids) when given, else the GOOGLE_DOCS env var.
 async function cmdDocsScan(argDocs) {
   const { GOOGLE_DOCS } = require("./config");
@@ -381,7 +395,7 @@ async function cmdDocsScan(argDocs) {
   process.stdout.write(JSON.stringify(out, null, 2) + "\n");
 }
 
-// Flip a processed line's TODO: -> LISTED: in its doc. Input JSON: {docId, text}.
+// Flip a processed line's leading TODO -> LISTED in its doc. Input JSON: {docId, text}.
 async function cmdDocsMark(jsonText) {
   const { markListed } = require("./docs");
   const d = JSON.parse(jsonText);

@@ -1,7 +1,7 @@
 "use strict";
 
-// Google Docs source: read `TODO:` lines from configured docs and flip them to
-// `LISTED:` after processing. Uses the same service account as the sheet (each
+// Google Docs source: read `TODO` / `TODO:` lines from configured docs and flip them to
+// `LISTED` after processing. Uses the same service account as the sheet (each
 // doc must be shared with the SA, and the Docs API enabled in the project).
 
 const G = require("./google");
@@ -26,31 +26,58 @@ function paragraphText(el) {
   return (el.paragraph.elements || []).map((e) => (e.textRun && e.textRun.content) || "").join("");
 }
 
-// Every paragraph whose text starts with "TODO:" (after optional whitespace).
-// Each item includes any links in the line (both real hyperlinks and bare URLs).
+// A TODO line: starts with "TODO" followed by ":" or whitespace (case-insensitive),
+// e.g. "TODO: pay invoice" or "TODO Pay invoice". A TODO line ending in ":" owns the
+// bullet list directly below it (its children are folded into the item's text).
+const TODO_RE = /^\s*TODO(?::|\s)\s*/i;
+
+function paraLinks(els, text) {
+  const links = [];
+  for (const e of els) {
+    const u = e.textRun && e.textRun.textStyle && e.textRun.textStyle.link && e.textRun.textStyle.link.url;
+    if (u) links.push(u);
+  }
+  for (const m of text.matchAll(/https?:\/\/[^\s)>\]]+/g)) links.push(m[0]);
+  return links;
+}
+
+// Each item includes any links in the line(s) (both real hyperlinks and bare URLs).
 async function listTodoItems(docId) {
   const docs = getDocsClient();
   const res = await docs.documents.get({ documentId: docId });
-  const items = [];
+  const paras = [];
   for (const el of res.data.body?.content || []) {
     if (!el.paragraph) continue;
     const els = el.paragraph.elements || [];
     const text = els.map((e) => (e.textRun && e.textRun.content) || "").join("").replace(/\n+$/, "");
-    if (!/^\s*TODO:/.test(text)) continue;
-    const links = [];
-    for (const e of els) {
-      const u = e.textRun && e.textRun.textStyle && e.textRun.textStyle.link && e.textRun.textStyle.link.url;
-      if (u) links.push(u);
+    const b = el.paragraph.bullet;
+    paras.push({ els, text, level: b ? (b.nestingLevel || 0) : -1 });
+  }
+  const items = [];
+  for (let i = 0; i < paras.length; i++) {
+    const { els, text, level } = paras[i];
+    if (!TODO_RE.test(text)) continue;
+    const links = paraLinks(els, text);
+    const children = [];
+    if (/:\s*$/.test(text)) {
+      for (let j = i + 1; j < paras.length; j++) {
+        const c = paras[j];
+        if (c.level <= level || TODO_RE.test(c.text) || !c.text.trim()) break;
+        children.push(c.text.trim());
+        links.push(...paraLinks(c.els, c.text));
+      }
     }
-    for (const m of text.matchAll(/https?:\/\/[^\s)>\]]+/g)) links.push(m[0]);
-    items.push({ text, taskText: text.replace(/^\s*TODO:\s*/, "").trim(), links: [...new Set(links)] });
+    let taskText = text.replace(TODO_RE, "").trim();
+    if (children.length) taskText = taskText.replace(/:\s*$/, "") + ": " + children.join(", ");
+    items.push({ text, taskText, children, links: [...new Set(links)] });
   }
   return items;
 }
 
-// Flip a specific line's "TODO:" to "LISTED:" so it isn't reprocessed.
+// Flip a specific line's leading "TODO" to "LISTED" so it isn't reprocessed
+// ("TODO: x" -> "LISTED: x", "TODO x" -> "LISTED x").
 async function markListed(docId, text) {
-  const replaceText = text.replace("TODO:", "LISTED:");
+  const replaceText = text.replace(/^(\s*)TODO(?=:|\s)/i, "$1LISTED");
   if (replaceText === text) return { updated: false, reason: "no-TODO-prefix" };
   const docs = getDocsClient();
   const res = await docs.documents.batchUpdate({

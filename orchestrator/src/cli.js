@@ -71,6 +71,40 @@ async function existingUrlSet() {
   return set;
 }
 
+// Day-planning view: every task with its full metadata and dates normalized to
+// YYYY-MM-DD (the sheet mixes "29 Jun", "29 Jun 2027", ISO and D/M/Y), plus a few
+// derived numbers so the planner doesn't have to parse dates itself. Read-only.
+const _MONS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function _isoDate(s, todayY) {
+  const t = String(s || "").trim();
+  if (!t) return "";
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const pad = (n) => String(n).padStart(2, "0");
+  m = t.match(/^(\d{1,2})\s+([a-z]{3})\w*\.?(?:\s+(\d{4}))?$/i);
+  if (m && _MONS[m[2].toLowerCase()] != null) return `${m[3] || todayY}-${pad(_MONS[m[2].toLowerCase()] + 1)}-${pad(m[1])}`;
+  m = t.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/); // day-first (NL)
+  if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+  return "";
+}
+async function cmdPlan() {
+  const { tasks } = await getTasks();
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Amsterdam" }).format(new Date()); // YYYY-MM-DD
+  const y = today.slice(0, 4);
+  const days = (iso) => (iso ? Math.round((Date.parse(iso) - Date.parse(today)) / 86400000) : null);
+  const out = tasks.map((t) => {
+    const deadline = _isoDate(t.deadline, y), reviewDate = _isoDate(t.reviewDate, y), commitDate = _isoDate(t.commitDate, y), created = _isoDate(t.createdDate, y);
+    return {
+      id: t.id, task: t.task, label: t.label, taskType: t.taskType || "", starred: !!t.prio,
+      importance: t.importance, urgency: t.urgency, effort: t.effort, energy: t.energy || "", requirements: t.requirements || "",
+      deadline, daysToDeadline: days(deadline), reviewDate, reviewDue: !!reviewDate && days(reviewDate) <= 0,
+      commitDate, committedToday: commitDate === today, ageDays: created ? -days(created) : null,
+      links: (t.context || "").split("\n").filter((x) => x.trim()).length,
+    };
+  });
+  process.stdout.write(JSON.stringify({ today, taskCount: out.length, tasks: out }, null, 1) + "\n");
+}
+
 async function cmdContext() {
   const { sheetName, tasks } = await getTasks();
   const staging = await readTab(STAGING_TAB);
@@ -373,7 +407,9 @@ async function cmdGmail2Relabel(threadId) {
 async function main() {
   require("./config").assertConfig();
   const cmd = process.argv[2];
-  if (cmd === "context") {
+  if (cmd === "plan") {
+    await cmdPlan();
+  } else if (cmd === "context") {
     await cmdContext();
   } else if (cmd === "gmail2-scan") {
     await cmdGmail2Scan();

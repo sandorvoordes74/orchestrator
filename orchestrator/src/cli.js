@@ -407,7 +407,13 @@ async function cmdGmail2Relabel(threadId) {
 async function main() {
   require("./config").assertConfig();
   const cmd = process.argv[2];
-  if (cmd === "plan") {
+  if (cmd === "gmail2-send") {
+    // usage: node src/cli.js gmail2-send "<subject>" [to]  < body.txt
+    const { isConfigured, sendMail } = require("./gmail2");
+    if (!isConfigured()) throw new Error("gmail2-send: private mailbox not configured");
+    const text = await readStdin();
+    process.stdout.write(JSON.stringify(await sendMail({ subject: process.argv[3], to: process.argv[4], text })) + "\n");
+  } else if (cmd === "plan") {
     await cmdPlan();
   } else if (cmd === "context") {
     await cmdContext();

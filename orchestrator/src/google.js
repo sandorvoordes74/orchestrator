@@ -143,6 +143,9 @@ function gmailClient(getToken) {
         get: ({ id, format }) => call("GET", `${GMAIL}/threads/${id}?format=${format || "full"}`),
         modify: ({ id, requestBody }) => call("POST", `${GMAIL}/threads/${id}/modify`, requestBody),
       },
+      messages: {
+        send: ({ requestBody }) => call("POST", `${GMAIL}/messages/send`, requestBody),
+      },
     },
   };
 }

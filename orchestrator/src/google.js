@@ -88,12 +88,25 @@ async function refreshAccessToken(clientId, clientSecret, refresh) {
   return res.access_token;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // getToken: async () => access token. Returns a caller giving { data } like googleapis.
+// Retries rate limits (429) and transient 5xx with backoff — bursts of match/upsert/log
+// calls can exceed the Sheets per-minute read quota; it resets within ~60s.
 function caller(getToken) {
   return async (method, url, body) => {
-    const token = await getToken();
-    const data = await request(method, url, { headers: { Authorization: "Bearer " + token }, body });
-    return { data };
+    const delays = [5000, 15000, 30000, 60000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const token = await getToken();
+        const data = await request(method, url, { headers: { Authorization: "Bearer " + token }, body });
+        return { data };
+      } catch (e) {
+        const retryable = e.code === 429 || (e.code >= 500 && e.code < 600);
+        if (!retryable || attempt >= delays.length) throw e;
+        await sleep(delays[attempt]);
+      }
+    }
   };
 }
 

@@ -166,6 +166,28 @@ async function cmdMatch(jsonText) {
   process.stdout.write(JSON.stringify({ sourceMatches: hits }, null, 2) + "\n");
 }
 
+// Delete tasks by id (owner-confirmed only). Re-reads the sheet right before deleting and
+// verifies each row still holds that id, so concurrent edits in the app can't shift us onto
+// the wrong row. Logs each deletion with the title.
+async function cmdDelete(ids) {
+  const { getSheetsClient, getTasksTabName, readHeaders, buildColumnMap } = require("./sheets");
+  const { SPREADSHEET_ID } = require("./config");
+  const sh = await getSheetsClient(); const tab = await getTasksTabName();
+  const m = buildColumnMap(await readHeaders(tab));
+  const rows = (await sh.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `'${tab}'` })).data.values || [];
+  const found = [], missing = [];
+  for (const id of ids) { const i = rows.findIndex((r, k) => k > 0 && String(r[m.id] ?? "").trim() === id); (i > 0 ? found : missing).push(i > 0 ? { id, i, title: rows[i][m.task] } : id); }
+  if (found.length) {
+    const meta = await sh.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID, fields: "sheets.properties" });
+    const sheetId = meta.data.sheets.find((x) => x.properties.title === tab).properties.sheetId;
+    const again = (await sh.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `'${tab}'!${String.fromCharCode(65 + m.id)}:${String.fromCharCode(65 + m.id)}` })).data.values || [];
+    for (const f of found) if (String((again[f.i] || [])[0] ?? "").trim() !== f.id) throw new Error(`delete: sheet changed under us (row ${f.i + 1} no longer ${f.id}); nothing deleted - retry`);
+    await sh.spreadsheets.batchUpdate({ spreadsheetId: SPREADSHEET_ID, requestBody: { requests: found.sort((a, b) => b.i - a.i).map((f) => ({ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: f.i, endIndex: f.i + 1 } } })) } });
+    for (const f of found) await appendLog({ action: "delete", task: String(f.title || "").slice(0, 60), id: f.id, note: "owner-confirmed delete (done/concluded)" });
+  }
+  process.stdout.write(JSON.stringify({ deleted: found.map((f) => ({ id: f.id, title: f.title })), notFound: missing }) + "\n");
+}
+
 // Full current fields of one task (for field re-evaluation before an append).
 async function cmdShow(id) {
   const { tasks } = await getTasks();
@@ -443,6 +465,10 @@ async function main() {
     await cmdUpsert(jsonText);
   } else if (cmd === "brief") {
     await cmdBrief();
+  } else if (cmd === "delete") {
+    const ids = process.argv.slice(3).flatMap((a) => a.split(",")).map((x) => x.trim()).filter(Boolean);
+    if (!ids.length) throw new Error("delete: provide one or more task ids");
+    await cmdDelete(ids);
   } else if (cmd === "show") {
     await cmdShow(process.argv[3]);
   } else if (cmd === "match") {
@@ -461,7 +487,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

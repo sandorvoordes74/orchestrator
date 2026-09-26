@@ -124,22 +124,19 @@ async function cmdContext() {
   process.stdout.write(JSON.stringify(out, null, 2) + "\n");
 }
 
-// Find existing tasks a candidate item likely "links up" with, so the agent can
-// append instead of creating a near-duplicate. Ranks by shared URLs / domains /
-// doc+thread ids AND significant-word overlap of the titles. Input JSON: {task, sourceUrls[]}.
-const _STOP = new Set("the a an of to for and or in on at with from by is are be as your you our we it this that these those re fw fwd task todo please pls check make get plan do new update via about into over per het een van voor met naar bij ook dit die dat wat nog maar als".split(" "));
-function _words(s) {
-  return [...new Set(String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 2 && !_STOP.has(w)))];
+// Compact one-line-per-task listing of the WHOLE task list, so the agent can judge
+// semantically (by meaning, with its own reasoning) whether a new item belongs to an
+// existing task. No keyword scoring - matching is the model's job.
+async function cmdBrief() {
+  const { tasks } = await getTasks();
+  const lines = tasks.map((t) => [t.id, t.label || "-", t.taskType || "-", (t.task || "").replace(/\s*\n+\s*/g, " / "),
+    t.deadline ? "deadline " + t.deadline : "", t.reviewDate ? "review " + t.reviewDate : ""].filter(Boolean).join(" | "));
+  process.stdout.write(`${tasks.length} tasks (id | label | type | title | dates)\n` + lines.join("\n") + "\n");
 }
-// Loose word equivalence for stems/plurals/compounds across languages: one word is a
-// prefix of the other ("hor"~"horren", "kado"~"kadootje", "invoice"~"invoices"). A 3-letter
-// stem only matches short extensions so it doesn't swallow unrelated long words.
-function _wordLike(a, b) {
-  if (a === b) return true;
-  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
-  if (!l.startsWith(s)) return false;
-  return s.length >= 4 || l.length - s.length <= 3;
-}
+
+// Hard evidence only: existing tasks that already hold one of the item's links or a rare
+// identifying token from them (doc id, mail thread id, Slack ts). Same source = same task.
+// Semantic matching is done by the agent over `brief`. Input JSON: {sourceUrls[]}.
 function _urlIdKeys(u) {
   // Identifying tokens only (doc id, thread id, message ts) — NOT the host, which is
   // shared by every Gmail/Docs/Slack link and would match unrelated tasks.
@@ -151,38 +148,29 @@ function _urlIdKeys(u) {
 }
 async function cmdMatch(jsonText) {
   let d; try { d = JSON.parse(jsonText); } catch (e) { throw new Error(`match: invalid JSON (${e.message})`); }
-  const candWords = _words(d.task);
   const candUrls = (d.sourceUrls || []).map((u) => String(u).trim()).filter(Boolean);
   const candUrlSet = new Set(candUrls);
   const candKeys = new Set(); for (const u of candUrls) for (const k of _urlIdKeys(u)) candKeys.add(k);
 
   const { tasks } = await getTasks();
-  // Per-task id-key sets + document frequency, so a key shared by MANY tasks (e.g. one
-  // Google Doc's id across all its TODO lines) is discounted; a rare/unique id counts.
+  // A key shared by MANY tasks (e.g. one Google Doc's id across all its TODO lines) is not evidence.
   const taskKeys = tasks.map((t) => { const s = new Set(); for (const u of (t.context || "").split("\n")) for (const k of _urlIdKeys(u.trim())) s.add(k); return s; });
   const df = {}; taskKeys.forEach((s) => s.forEach((k) => { df[k] = (df[k] || 0) + 1; }));
 
-  const scored = tasks.map((t, i) => {
+  const hits = tasks.map((t, i) => {
     const tUrls = (t.context || "").split("\n").map((x) => x.trim()).filter(Boolean);
     const sharedUrls = tUrls.filter((u) => candUrlSet.has(u)).length;
-    let keyScore = 0; const sharedKeys = [];
-    for (const k of candKeys) if (taskKeys[i].has(k)) { keyScore += 1 / df[k]; if (df[k] <= 4) sharedKeys.push(k); }
-    const tw = _words(t.task);
-    const shared = tw.filter((w) => candWords.includes(w));
-    // near-matches (stem/plural/prefix) count slightly less than exact ones
-    const near = tw.filter((w) => !candWords.includes(w) && candWords.some((c) => _wordLike(w, c)));
-    const denom = (new Set([...tw, ...candWords]).size - near.length) || 1;
-    const hits = shared.length + 0.8 * near.length;
-    // Jaccard alone buries short umbrella titles ("Horren") under long candidates, so
-    // also score overlap relative to the shorter title (damped).
-    const wordJaccard = Math.max(hits / denom, 0.6 * hits / (Math.min(tw.length, candWords.length) || 1));
-    // Exact URL match is strongest; rare shared ids next; word overlap catches
-    // cross-source relations (same client/person/deliverable in a different channel).
-    const score = sharedUrls * 1.2 + keyScore * 1.0 + wordJaccard * 0.9;
-    return { id: t.id, task: t.task, label: t.label, taskType: t.taskType, deadline: t.deadline || "", reviewDate: t.reviewDate || "", commitDate: t.commitDate || "", energy: t.energy || "", requirements: t.requirements || "", score: +score.toFixed(3), sharedUrls, sharedIdKeys: sharedKeys.length, sharedWords: [...shared, ...near.map((w) => w + "~")] };
-  }).filter((c) => c.score > 0.2 || c.sharedUrls > 0)
-    .sort((a, b) => b.score - a.score).slice(0, 6);
-  process.stdout.write(JSON.stringify({ candidates: scored }, null, 2) + "\n");
+    const sharedIdKeys = [...candKeys].filter((k) => taskKeys[i].has(k) && df[k] <= 2).length;
+    return { id: t.id, task: t.task, label: t.label, taskType: t.taskType, importance: t.importance || "", urgency: t.urgency || "", effort: t.effort || "", energy: t.energy || "", deadline: t.deadline || "", reviewDate: t.reviewDate || "", commitDate: t.commitDate || "", requirements: t.requirements || "", prio: !!t.prio, sharedUrls, sharedIdKeys };
+  }).filter((c) => c.sharedUrls > 0 || c.sharedIdKeys > 0);
+  process.stdout.write(JSON.stringify({ sourceMatches: hits }, null, 2) + "\n");
+}
+
+// Full current fields of one task (for field re-evaluation before an append).
+async function cmdShow(id) {
+  const { tasks } = await getTasks();
+  const t = tasks.find((x) => x.id === id);
+  process.stdout.write(JSON.stringify(t || { error: "not found", id }, null, 2) + "\n");
 }
 
 async function cmdStageDraft(jsonText) {
@@ -453,6 +441,10 @@ async function main() {
     const jsonText = arg && arg.trim() ? arg : await readStdin();
     if (!jsonText || !jsonText.trim()) throw new Error("upsert: provide item JSON as an argument or on stdin");
     await cmdUpsert(jsonText);
+  } else if (cmd === "brief") {
+    await cmdBrief();
+  } else if (cmd === "show") {
+    await cmdShow(process.argv[3]);
   } else if (cmd === "match") {
     const arg = process.argv[3];
     const jsonText = arg && arg.trim() ? arg : await readStdin();
@@ -469,7 +461,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

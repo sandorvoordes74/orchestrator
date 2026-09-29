@@ -214,8 +214,15 @@ const _MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oc
 function toSheetDate(v) {
   if (!v) return "";
   const str = String(v).trim();
-  const d = /^\d{4}-\d{2}-\d{2}$/.test(str) ? new Date(str + "T00:00:00") : new Date(str);
+  let d = /^\d{4}-\d{2}-\d{2}$/.test(str) ? new Date(str + "T00:00:00") : new Date(str);
   if (isNaN(d.getTime())) return str; // leave anything unparseable as-is
+  // A date given without a year ("7 Oct", "Oct 7") parses as 2001 in JS: treat it as the
+  // next occurrence from today instead.
+  if (!/\d{4}/.test(str)) {
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    d = new Date(now.getFullYear(), d.getMonth(), d.getDate());
+    if (d < now) d.setFullYear(d.getFullYear() + 1);
+  }
   const y = d.getFullYear();
   return `${d.getDate()} ${_MON[d.getMonth()]}${y !== new Date().getFullYear() ? " " + y : ""}`;
 }

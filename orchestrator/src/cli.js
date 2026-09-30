@@ -447,6 +447,13 @@ async function main() {
     const g2 = require("./gmail2");
     if (!g2.isConfigured()) { process.stdout.write(JSON.stringify({ configured: false }) + "\n"); return; }
     process.stdout.write(JSON.stringify({ configured: true, ...(await g2.inboxOverview(Number(process.argv[3]) || 25)) }, null, 2) + "\n");
+  } else if (cmd === "gmail2-archive") {
+    // owner-confirmed: archive private-mailbox threads (reversible). usage: gmail2-archive <threadId,...>
+    const ids = process.argv.slice(3).flatMap((a) => a.split(",")).map((x) => x.trim()).filter(Boolean);
+    if (!ids.length) throw new Error("gmail2-archive: provide one or more threadIds");
+    const g2 = require("./gmail2"); const out = [];
+    for (const id of ids) { out.push(await g2.archive(id)); await appendLog({ action: "gmail2-archive", source: id, note: "owner-confirmed archive" }); }
+    process.stdout.write(JSON.stringify(out) + "\n");
   } else if (cmd === "gmail2-relabel") {
     const id = process.argv[3];
     if (!id) throw new Error("gmail2-relabel: provide a threadId");
@@ -487,7 +494,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

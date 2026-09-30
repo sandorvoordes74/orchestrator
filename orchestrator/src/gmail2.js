@@ -93,6 +93,7 @@ async function relabel(threadId) {
 // inbox-processing block. Headers only (no bodies).
 async function inboxOverview(max = 25) {
   const g = gmail();
+  const email = (await g.users.getProfile({ userId: "me" })).data.emailAddress;
   const q = "in:inbox -label:todo -label:listed";
   const list = await g.users.threads.list({ userId: "me", q, maxResults: max });
   const threads = list.data.threads || [];
@@ -102,14 +103,24 @@ async function inboxOverview(max = 25) {
     const msgs = t.data.messages || [];
     const last = msgs[msgs.length - 1] || { payload: {} };
     items.push({
+      threadId: th.id,
+      permalink: `https://mail.google.com/mail/u/0/?authuser=${encodeURIComponent(email)}#all/${th.id}`,
       subject: header(last.payload.headers, "Subject") || "(no subject)",
       from: header(last.payload.headers, "From"),
       date: header(last.payload.headers, "Date"),
+      snippet: (last.snippet || "").slice(0, 160),
       unread: (last.labelIds || []).includes("UNREAD"),
       messages: msgs.length,
     });
   }
   return { query: q, estimate: list.data.resultSizeEstimate || threads.length, shown: items.length, items };
+}
+
+// Archive a thread (remove it from the inbox; reversible - it stays in All Mail).
+async function archive(threadId) {
+  const g = gmail();
+  await g.users.threads.modify({ userId: "me", id: threadId, requestBody: { removeLabelIds: ["INBOX"] } });
+  return { archived: true, threadId };
 }
 
 // Send a plain-text email from the private mailbox (gmail.modify allows sending).
@@ -130,4 +141,4 @@ async function sendMail({ to, subject, text }) {
   return { sent: true, to: rcpt, id: r.data.id };
 }
 
-module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview };
+module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview, archive };

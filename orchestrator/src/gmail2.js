@@ -123,6 +123,33 @@ async function archive(threadId) {
   return { archived: true, threadId };
 }
 
+// Create a REPLY DRAFT in an existing private-mailbox thread (never sends). The owner
+// reviews and sends it himself from Gmail. Replies to the sender of the last message.
+async function draftReply(threadId, text) {
+  const g = gmail();
+  const self = (await g.users.getProfile({ userId: "me" })).data.emailAddress;
+  const t = await g.users.threads.get({ userId: "me", id: threadId, format: "metadata" });
+  const msgs = t.data.messages || [];
+  const last = [...msgs].reverse().find((m) => !header(m.payload.headers, "From").includes(self)) || msgs[msgs.length - 1];
+  if (!last) throw new Error("draftReply: thread has no messages");
+  const hs = last.payload.headers;
+  const to = header(hs, "Reply-To") || header(hs, "From");
+  const subj = header(hs, "Subject") || "";
+  const msgId = header(hs, "Message-ID") || header(hs, "Message-Id");
+  const refs = [header(hs, "References"), msgId].filter(Boolean).join(" ");
+  const b64w = (x) => Buffer.from(x, "utf8").toString("base64");
+  const raw = [
+    `From: ${self}`, `To: ${to}`,
+    `Subject: =?UTF-8?B?${b64w(/^re:/i.test(subj) ? subj : "Re: " + subj)}?=`,
+    ...(msgId ? [`In-Reply-To: ${msgId}`, `References: ${refs}`] : []),
+    "MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64",
+    "", b64w(text || ""),
+  ].join("\r\n");
+  const rawB64url = Buffer.from(raw, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const r = await g.users.drafts.create({ userId: "me", requestBody: { message: { raw: rawB64url, threadId } } });
+  return { drafted: true, draftId: r.data.id, threadId, to };
+}
+
 // Send a plain-text email from the private mailbox (gmail.modify allows sending).
 // `to` defaults to the mailbox's own address.
 async function sendMail({ to, subject, text }) {
@@ -141,4 +168,4 @@ async function sendMail({ to, subject, text }) {
   return { sent: true, to: rcpt, id: r.data.id };
 }
 
-module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview, archive };
+module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview, archive, draftReply };

@@ -159,6 +159,9 @@ function gmailClient(getToken) {
       messages: {
         send: ({ requestBody }) => call("POST", `${GMAIL}/messages/send`, requestBody),
       },
+      drafts: {
+        create: ({ requestBody }) => call("POST", `${GMAIL}/drafts`, requestBody),
+      },
     },
   };
 }

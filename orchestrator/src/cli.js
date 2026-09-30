@@ -454,6 +454,13 @@ async function main() {
     const g2 = require("./gmail2"); const out = [];
     for (const id of ids) { out.push(await g2.archive(id)); await appendLog({ action: "gmail2-archive", source: id, note: "owner-confirmed archive" }); }
     process.stdout.write(JSON.stringify(out) + "\n");
+  } else if (cmd === "gmail2-draft") {
+    // owner-confirmed: create a reply DRAFT (never sends). usage: gmail2-draft <threadId> < body.txt
+    const id = process.argv[3]; if (!id) throw new Error("gmail2-draft: provide a threadId (body on stdin)");
+    const text = await readStdin(); if (!text.trim()) throw new Error("gmail2-draft: empty body");
+    const r = await require("./gmail2").draftReply(id, text);
+    await appendLog({ action: "gmail2-draft", source: id, note: "reply draft created (not sent)" });
+    process.stdout.write(JSON.stringify(r) + "\n");
   } else if (cmd === "gmail2-relabel") {
     const id = process.argv[3];
     if (!id) throw new Error("gmail2-relabel: provide a threadId");
@@ -494,7 +501,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

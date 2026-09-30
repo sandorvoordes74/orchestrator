@@ -188,6 +188,36 @@ async function cmdDelete(ids) {
   process.stdout.write(JSON.stringify({ deleted: found.map((f) => ({ id: f.id, title: f.title })), notFound: missing }) + "\n");
 }
 
+// Small key/value memory for the assistant routines (today's plan, suggestions made,
+// declined items, owner notes), stored in an '_assistant' tab of the sheet.
+const STATE_TAB = "_assistant";
+async function _stateRows() {
+  const { ensureTab, readTab } = require("./sheets");
+  await ensureTab(STATE_TAB, ["Key", "Value", "Updated"]);
+  return readTab(STATE_TAB);
+}
+async function cmdStateGet(key) {
+  const rows = await _stateRows();
+  const r = rows.find((x, i) => i > 0 && x[0] === key);
+  process.stdout.write((r ? r[1] || "" : "") + "\n");
+}
+async function cmdStateSet(key, value, append) {
+  const { getSheetsClient, appendRow } = require("./sheets");
+  const { SPREADSHEET_ID } = require("./config");
+  const rows = await _stateRows();
+  const i = rows.findIndex((x, k) => k > 0 && x[0] === key);
+  let v = append && i > 0 ? ((rows[i][1] || "") + (rows[i][1] ? "\n" : "") + value) : value;
+  if (v.length > 45000) v = v.slice(v.length - 45000); // keep the newest part (sheet cell limit)
+  const now = new Date().toISOString();
+  if (i > 0) {
+    const sh = await getSheetsClient();
+    await sh.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `'${STATE_TAB}'!A${i + 1}:C${i + 1}`, valueInputOption: "RAW", requestBody: { values: [[key, v, now]] } });
+  } else {
+    await appendRow(STATE_TAB, [key, v, now]);
+  }
+  process.stdout.write(JSON.stringify({ key, chars: v.length, updated: now }) + "\n");
+}
+
 // Full current fields of one task (for field re-evaluation before an append).
 async function cmdShow(id) {
   const { tasks } = await getTasks();
@@ -483,6 +513,14 @@ async function main() {
     const ids = process.argv.slice(3).flatMap((a) => a.split(",")).map((x) => x.trim()).filter(Boolean);
     if (!ids.length) throw new Error("delete: provide one or more task ids");
     await cmdDelete(ids);
+  } else if (cmd === "state-get") {
+    if (!process.argv[3]) throw new Error("state-get: provide a key");
+    await cmdStateGet(process.argv[3]);
+  } else if (cmd === "state-set" || cmd === "state-append") {
+    // usage: state-set <key> < value   |   state-append <key> < line(s)
+    if (!process.argv[3]) throw new Error(cmd + ": provide a key (value on stdin)");
+    const val = (await readStdin()).replace(/\s+$/, "");
+    await cmdStateSet(process.argv[3], val, cmd === "state-append");
   } else if (cmd === "show") {
     await cmdShow(process.argv[3]);
   } else if (cmd === "match") {
@@ -501,7 +539,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

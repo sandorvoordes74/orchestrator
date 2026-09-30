@@ -218,6 +218,31 @@ async function cmdStateSet(key, value, append) {
   process.stdout.write(JSON.stringify({ key, chars: v.length, updated: now }) + "\n");
 }
 
+// Housekeeping for the assistant memory: drop per-day keys ("<name>:YYYY-MM-DD") older
+// than <days>, and trim dated lines ("YYYY-MM-DD ...") in rolling keys (declined, handled)
+// to the last <lineDays> days. Undated lines (e.g. standing notes) are kept.
+async function cmdStatePrune(days, lineDays) {
+  const { getSheetsClient } = require("./sheets");
+  const { SPREADSHEET_ID } = require("./config");
+  const rows = await _stateRows();
+  const cut = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+  const dayCut = cut(days), lineCut = cut(lineDays);
+  const keep = [rows[0] || ["Key", "Value", "Updated"]]; let dropped = 0, trimmed = 0;
+  for (const r of rows.slice(1)) {
+    const m = String(r[0] || "").match(/:(\d{4}-\d{2}-\d{2})$/);
+    if (m && m[1] < dayCut) { dropped++; continue; }
+    if (!m && ["declined", "handled"].includes(r[0])) {
+      const lines = String(r[1] || "").split("\n").filter((l) => { const d = l.match(/^(\d{4}-\d{2}-\d{2})/); return !d || d[1] >= lineCut; });
+      if (lines.join("\n") !== String(r[1] || "")) { trimmed++; r[1] = lines.join("\n"); }
+    }
+    keep.push(r);
+  }
+  const sh = await getSheetsClient();
+  await sh.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: `'${STATE_TAB}'` });
+  await sh.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `'${STATE_TAB}'!A1`, valueInputOption: "RAW", requestBody: { values: keep } });
+  process.stdout.write(JSON.stringify({ kept: keep.length - 1, droppedDayKeys: dropped, trimmedKeys: trimmed }) + "\n");
+}
+
 // Full current fields of one task (for field re-evaluation before an append).
 async function cmdShow(id) {
   const { tasks } = await getTasks();
@@ -521,6 +546,8 @@ async function main() {
     if (!process.argv[3]) throw new Error(cmd + ": provide a key (value on stdin)");
     const val = (await readStdin()).replace(/\s+$/, "");
     await cmdStateSet(process.argv[3], val, cmd === "state-append");
+  } else if (cmd === "state-prune") {
+    await cmdStatePrune(Number(process.argv[3]) || 7, Number(process.argv[4]) || 14);
   } else if (cmd === "show") {
     await cmdShow(process.argv[3]);
   } else if (cmd === "match") {
@@ -539,7 +566,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

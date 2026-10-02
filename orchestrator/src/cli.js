@@ -218,6 +218,29 @@ async function cmdStateSet(key, value, append) {
   process.stdout.write(JSON.stringify({ key, chars: v.length, updated: now }) + "\n");
 }
 
+// Home-screen widget feed: overwrite the '_widget' tab with a small Key|Value list
+// (read by an Apps Script web app that the phone widget polls). Input: JSON on stdin,
+// e.g. {"mode":"hourly","title":"09:00-10:00","weather":"...","next":["...","..."]}.
+// Arrays are stored newline-joined; unknown keys are kept as-is.
+const WIDGET_TAB = "_widget";
+async function cmdWidgetSet(jsonText) {
+  const { getSheetsClient, ensureTab } = require("./sheets");
+  const { SPREADSHEET_ID } = require("./config");
+  const data = JSON.parse(jsonText);
+  const now = new Date().toISOString();
+  const rows = [["Key", "Value"], ["updated", now]];
+  for (const [k, v] of Object.entries(data)) {
+    if (k === "updated") continue;
+    const val = Array.isArray(v) ? v.map(String).join("\n") : v == null ? "" : String(v);
+    rows.push([k, val.slice(0, 2000)]);
+  }
+  await ensureTab(WIDGET_TAB, ["Key", "Value"]);
+  const sh = await getSheetsClient();
+  await sh.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: `'${WIDGET_TAB}'` });
+  await sh.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `'${WIDGET_TAB}'!A1`, valueInputOption: "RAW", requestBody: { values: rows } });
+  process.stdout.write(JSON.stringify({ widget: rows.length - 2, updated: now }) + "\n");
+}
+
 // Housekeeping for the assistant memory: drop per-day keys ("<name>:YYYY-MM-DD") older
 // than <days>, and trim dated lines ("YYYY-MM-DD ...") in rolling keys (declined, handled)
 // to the last <lineDays> days. Undated lines (e.g. standing notes) are kept.
@@ -546,6 +569,10 @@ async function main() {
     if (!process.argv[3]) throw new Error(cmd + ": provide a key (value on stdin)");
     const val = (await readStdin()).replace(/\s+$/, "");
     await cmdStateSet(process.argv[3], val, cmd === "state-append");
+  } else if (cmd === "widget-set") {
+    const jsonText = await readStdin();
+    if (!jsonText || !jsonText.trim()) throw new Error("widget-set: provide the widget JSON on stdin");
+    await cmdWidgetSet(jsonText);
   } else if (cmd === "state-prune") {
     await cmdStatePrune(Number(process.argv[3]) || 7, Number(process.argv[4]) || 14);
   } else if (cmd === "show") {
@@ -566,7 +593,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

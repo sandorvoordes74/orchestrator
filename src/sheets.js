@@ -141,16 +141,6 @@ function sourceUrlIndex(tasks) {
 
 // --- Write helpers ----------------------------------------------------------
 
-// Staging tab: reviewer-facing. `Approve?` is the cell the user sets; provenance
-// (Source URL / Confidence / Reasoning) supports the review decision.
-const STAGING_HEADERS = [
-  "Approve?", "Task", "Label", "Importance", "Urgency", "Effort",
-  "Deadline", "Review Date", "Context", "Confidence", "Reasoning",
-  "Status", "Draft ID", "Append To",
-];
-
-const STATE_HEADERS = ["Key", "Value"];
-
 const LOG_HEADERS = ["When", "Action", "Task", "Task ID", "Source", "Note"];
 
 // Append one audit-log row (tag-driven mode logs every new/append/skip).
@@ -166,7 +156,6 @@ async function appendLog(entry) {
     entry.note || "",
   ]);
 }
-const REJECTED_TAB = "_rejected";
 
 const _hml = (v) => (["H", "M", "L"].includes(String(v || "").toUpperCase()) ? String(v).toUpperCase() : "M");
 // WORK | PRIVATE — every new task must be one or the other; default WORK (most sources are work).
@@ -248,7 +237,7 @@ async function ensureTab(title, headers) {
   return { created: true };
 }
 
-// Append one row; returns the A1 range that was written (e.g. 'Staging'!A5:M5).
+// Append one row; returns the A1 range that was written (e.g. 'Log'!A5:F5).
 async function appendRow(title, values) {
   const sheets = await getSheetsClient();
   const res = await sheets.spreadsheets.values.append({
@@ -407,41 +396,6 @@ async function updateTaskFields(taskId, fields) {
   return { updated: false, reason: "task-not-found" };
 }
 
-// Rejected source URLs — remembered so they are never re-drafted.
-async function readRejected() {
-  const { tabs } = await listTabs();
-  if (!tabs.includes(REJECTED_TAB)) return [];
-  const rows = await readTab(REJECTED_TAB);
-  return rows.slice(1).map((r) => String(r[0] ?? "").trim()).filter(Boolean);
-}
-
-async function addRejected(urls) {
-  if (!urls || !urls.length) return;
-  await ensureTab(REJECTED_TAB, ["Source URL"]);
-  const sheets = await getSheetsClient();
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `'${REJECTED_TAB}'!A:A`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: urls.map((u) => [u]) },
-  });
-}
-
-// Replace all Staging data rows (keep header) — used after promotion.
-async function rewriteStagingRows(rows) {
-  await clearRange(`'${STAGING_TAB}'!A2:Z100000`);
-  if (rows && rows.length) {
-    const sheets = await getSheetsClient();
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `'${STAGING_TAB}'!A2`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: rows },
-    });
-  }
-}
-
 module.exports = {
   saToken,
   getSheetsClient,
@@ -452,8 +406,6 @@ module.exports = {
   getTasks,
   distinctLabels,
   sourceUrlIndex,
-  STAGING_HEADERS,
-  STATE_HEADERS,
   ensureTab,
   appendRow,
   readTab,
@@ -462,7 +414,4 @@ module.exports = {
   appendUrlToTaskContext,
   updateTaskFields,
   appendLog,
-  readRejected,
-  addRejected,
-  rewriteStagingRows,
 };

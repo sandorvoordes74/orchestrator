@@ -173,22 +173,5 @@ async function draftReply(threadId, text) {
   return { drafted: true, draftId: r.data.id, threadId, to };
 }
 
-// Send a plain-text email from the private mailbox (gmail.modify allows sending).
-// `to` defaults to the mailbox's own address.
-async function sendMail({ to, subject, text }) {
-  const g = gmail();
-  const self = (await g.users.getProfile({ userId: "me" })).data.emailAddress;
-  const rcpt = to || self;
-  const b64w = (s) => Buffer.from(s, "utf8").toString("base64");
-  const raw = [
-    `From: ${self}`, `To: ${rcpt}`,
-    `Subject: =?UTF-8?B?${b64w(subject || "(no subject)")}?=`,
-    "MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64",
-    "", b64w(text || ""),
-  ].join("\r\n");
-  const rawB64url = Buffer.from(raw, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const r = await g.users.messages.send({ requestBody: { raw: rawB64url } });
-  return { sent: true, to: rcpt, id: r.data.id };
-}
 
-module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview, archive, draftReply, getThread };
+module.exports = { isConfigured, listTodo, relabel, inboxOverview, archive, draftReply, getThread };

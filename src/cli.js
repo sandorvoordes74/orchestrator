@@ -1,43 +1,20 @@
 "use strict";
 
-// Agent-facing CLI. The cloud routine's Claude agent calls these from Bash to
-// read context for reasoning and to stage enriched drafts. All sheet I/O goes
-// through the service account (key from env). Output is JSON on stdout.
+// Command-line interface used by the personal-assistant cloud routine. The routine's agent
+// runs these from Bash; every command prints JSON (or plain text) on stdout. All sheet I/O
+// goes through the service account (key from env). Run without arguments to list commands.
 //
-//   node src/cli.js context
-//   node src/cli.js stage-draft '<json>'      (or pipe the JSON via stdin)
-//
-// A draft JSON looks like:
-//   {
-//     "task": "Send Q3 deck to Maria",
-//     "label": "SALES",
-//     "importance": "H", "urgency": "M", "effort": "L",
-//     "taskType": "WORK",              // WORK | PRIVATE (default WORK)
-//     "deadline": "2026-07-01", "reviewDate": "",
-//     "sourceUrls": ["https://mail.google.com/mail/u/0/#all/<id>"],
-//     "confidence": 0.82,
-//     "reasoning": "Direct request with a Friday deadline"
-//   }
+//   Tasks:      context | brief | plan | show <id> | match '<json>' | upsert '<json>' | delete <id,...>
+//   Sources:    docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-relabel <id> | gmail2-inbox [n] [query]
+//               gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> (body on stdin)
+//   Assistant:  state-get/state-set/state-append <key> | state-prune [days] [lineDays]
+//               triage-queue [n] | triage-set | weather [place] | widget-set | log <msg>
 
 const crypto = require("crypto");
 const {
-  getTasks, distinctLabels, sourceUrlIndex,
-  readTab, appendRow, STAGING_HEADERS,
-  appendTask, appendUrlToTaskContext, updateTaskFields, appendLog, readRejected, addRejected, rewriteStagingRows,
+  getTasks, distinctLabels, sourceUrlIndex, readTab, appendRow,
+  appendTask, appendUrlToTaskContext, updateTaskFields, appendLog,
 } = require("./sheets");
-const { STAGING_TAB } = require("./config");
-
-// Staging column indices (must match STAGING_HEADERS order).
-const C = {
-  APPROVE: 0, TASK: 1, LABEL: 2, IMP: 3, URG: 4, EFF: 5, DEAD: 6,
-  REVIEW: 7, CTX: 8, CONF: 9, REASON: 10, STATUS: 11, DRAFT: 12, APPEND: 13,
-};
-const APPROVE_YES = new Set(["x", "yes", "y", "true", "1", "approve", "approved"]);
-const REJECT_NO = new Set(["no", "n", "reject", "rejected"]);
-const threadIdFromUrl = (u) => (String(u).match(/#all\/([^/?\s]+)/) || [])[1];
-
-const hml = (v) => (["H", "M", "L"].includes(String(v || "").toUpperCase()) ? String(v).toUpperCase() : "M");
-const today = () => new Date().toISOString().slice(0, 10);
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -55,20 +32,6 @@ function urlsFromDraft(draft) {
     .concat(draft.contextUrls || [])
     .concat(typeof draft.context === "string" ? draft.context.split("\n") : []);
   return [...new Set(raw.map((u) => String(u).trim()).filter(Boolean))];
-}
-
-// Source URLs already present in Tasks AND Staging — the dedup index.
-async function existingUrlSet() {
-  const { tasks } = await getTasks();
-  const set = sourceUrlIndex(tasks);
-  const staging = await readTab(STAGING_TAB);
-  for (const row of staging.slice(1)) {
-    for (const u of String(row[C.CTX] || "").split("\n")) {
-      if (u.trim()) set.add(u.trim());
-    }
-  }
-  for (const u of await readRejected()) set.add(u); // never re-draft a rejected source
-  return set;
 }
 
 // Day-planning view: every task with its full metadata and dates normalized to
@@ -107,7 +70,6 @@ async function cmdPlan() {
 
 async function cmdContext() {
   const { sheetName, tasks } = await getTasks();
-  const staging = await readTab(STAGING_TAB);
   const out = {
     tasksTab: sheetName,
     labels: distinctLabels(tasks),
@@ -118,8 +80,7 @@ async function cmdContext() {
       label: t.label,
       urls: (t.context || "").split("\n").map((u) => u.trim()).filter(Boolean),
     })),
-    dedupUrls: [...sourceUrlIndex(tasks)], // tag-driven: dedup only against live Tasks
-    stagingPendingCount: Math.max(0, staging.length - 1),
+    dedupUrls: [...sourceUrlIndex(tasks)], // dedup against the live task list
   };
   process.stdout.write(JSON.stringify(out, null, 2) + "\n");
 }
@@ -392,133 +353,7 @@ async function cmdShow(id) {
   process.stdout.write(JSON.stringify(t || { error: "not found", id }, null, 2) + "\n");
 }
 
-async function cmdStageDraft(jsonText) {
-  let draft;
-  try {
-    draft = JSON.parse(jsonText);
-  } catch (e) {
-    throw new Error(`stage-draft: invalid JSON input (${e.message})`);
-  }
-  if (!draft.task || !String(draft.task).trim()) {
-    throw new Error("stage-draft: 'task' (title) is required");
-  }
-
-  const urls = urlsFromDraft(draft);
-
-  // Defense-in-depth dedup: never stage a source already represented.
-  const existing = await existingUrlSet();
-  const dup = urls.find((u) => existing.has(u));
-  if (dup) {
-    process.stdout.write(JSON.stringify({ status: "skipped", reason: "duplicate-source-url", url: dup }) + "\n");
-    return;
-  }
-
-  let appendToId = String(draft.appendToId || "").trim();
-  let title = String(draft.task).trim();
-  let appendNote;
-  if (appendToId) {
-    const { tasks } = await getTasks();
-    if (!tasks.some((t) => t.id === appendToId)) {
-      appendNote = `appendToId '${appendToId}' is not an existing task id; staged as a NEW task instead`;
-      appendToId = ""; // invalid/hallucinated id -> treat as a normal new draft
-    }
-  }
-  if (!appendToId) title = title.replace(/^\[APPEND\]\s*/i, ""); // strip marker if not an append
-
-  const draftId = crypto.randomUUID().slice(0, 8);
-  const row = [
-    "",                                   // Approve?  (user sets)
-    title,                                // Task
-    draft.label || "",                    // Label
-    hml(draft.importance),                // Importance
-    hml(draft.urgency),                   // Urgency
-    hml(draft.effort),                    // Effort
-    draft.deadline || "",                 // Deadline
-    draft.reviewDate || today(),          // Review Date (default today so it surfaces)
-    urls.join("\n"),                      // Context
-    draft.confidence != null ? String(draft.confidence) : "", // Confidence
-    draft.reasoning || "",                // Reasoning
-    appendToId ? "append" : "pending",    // Status
-    draftId,                              // Draft ID
-    appendToId,                           // Append To (existing task id, for [APPEND] drafts)
-  ];
-  const range = await appendRow(STAGING_TAB, row);
-  process.stdout.write(JSON.stringify({ status: "staged", draftId, range, urls, appendToId: appendToId || undefined, note: appendNote }) + "\n");
-}
-
-// Promote approved Staging drafts: new -> append to Tasks; [APPEND] -> add link
-// to the existing task; rejected -> remembered (never re-drafted); blank -> kept.
-// Returns thread ids of promoted sources so the agent can archive the READ ones.
-async function cmdPromote() {
-  const staging = await readTab(STAGING_TAB);
-  const dataRows = staging.slice(1);
-  const promotedNew = [], appended = [], rejectedUrls = [], keep = [], errors = [], skippedDup = [];
-  const archiveThreadIds = new Set();
-
-  // Idempotency guard: never create a NEW task whose source URL is already a task.
-  const { tasks } = await getTasks();
-  const taskUrls = sourceUrlIndex(tasks);
-
-  for (const row of dataRows) {
-    const mark = String(row[C.APPROVE] ?? "").trim().toLowerCase();
-    const urls = String(row[C.CTX] ?? "").split("\n").map((u) => u.trim()).filter(Boolean);
-
-    if (APPROVE_YES.has(mark)) {
-      try {
-        const appendTo = String(row[C.APPEND] ?? "").trim();
-        const newTitle = String(row[C.TASK] ?? "").replace(/^\[APPEND\]\s*/i, "");
-        if (appendTo) {
-          const results = [];
-          for (const u of urls) results.push(await appendUrlToTaskContext(appendTo, u));
-          if (results.length && results.every((r) => r.reason === "task-not-found")) {
-            // Append target no longer exists (completed/removed, or a bad id) —
-            // fall back to a NEW task so the email is never silently dropped.
-            if (urls.some((u) => taskUrls.has(u))) {
-              skippedDup.push({ task: newTitle, urls, note: "append-target-missing; url already a task" });
-            } else {
-              const id = await appendTask({
-                task: newTitle, label: row[C.LABEL], importance: row[C.IMP], urgency: row[C.URG],
-                effort: row[C.EFF], deadline: row[C.DEAD], reviewDate: row[C.REVIEW], sourceUrls: urls,
-              });
-              urls.forEach((u) => taskUrls.add(u));
-              promotedNew.push({ id, task: newTitle, note: "append target " + appendTo + " missing -> created as new task" });
-            }
-          } else {
-            appended.push({ taskId: appendTo, urls });
-          }
-        } else if (urls.some((u) => taskUrls.has(u))) {
-          skippedDup.push({ task: row[C.TASK], urls }); // already a task — don't duplicate
-        } else {
-          const id = await appendTask({
-            task: row[C.TASK], label: row[C.LABEL], importance: row[C.IMP], urgency: row[C.URG],
-            effort: row[C.EFF], deadline: row[C.DEAD], reviewDate: row[C.REVIEW], sourceUrls: urls,
-          });
-          urls.forEach((u) => taskUrls.add(u)); // guard against intra-run dupes too
-          promotedNew.push({ id, task: row[C.TASK] });
-        }
-        for (const u of urls) { const t = threadIdFromUrl(u); if (t) archiveThreadIds.add(t); }
-      } catch (e) {
-        errors.push({ task: row[C.TASK], error: e.message });
-        keep.push(row); // leave failed ones staged for retry
-      }
-    } else if (REJECT_NO.has(mark)) {
-      rejectedUrls.push(...urls);
-    } else {
-      keep.push(row); // pending / untouched
-    }
-  }
-
-  if (rejectedUrls.length) await addRejected(rejectedUrls);
-  await rewriteStagingRows(keep);
-
-  process.stdout.write(JSON.stringify({
-    promotedNew, appended, rejected: rejectedUrls.length, skippedDup,
-    archiveThreadIds: [...archiveThreadIds], errors,
-  }, null, 2) + "\n");
-}
-
-// Tag-driven mode: one curated item -> straight into Tasks (new or append) + logged.
-// No Staging/approval. The agent decides append-vs-new (via context) and passes appendToId
+// One curated item -> straight into Tasks (new or append) + logged. The agent decides append-vs-new (via context) and passes appendToId
 // for matches; guards keep it safe. JSON fields: task, label, importance, urgency, effort,
 // energy (LOW|MEDIUM|HIGH), requirements (array/string of context tokens), deadline, reviewDate,
 // commitDate, taskType (WORK|PRIVATE), sourceUrls[], appendToId?, updatedTitle?, fieldUpdates?
@@ -628,13 +463,7 @@ async function cmdGmail2Relabel(threadId) {
 async function main() {
   require("./config").assertConfig();
   const cmd = process.argv[2];
-  if (cmd === "gmail2-send") {
-    // usage: node src/cli.js gmail2-send "<subject>" [to]  < body.txt
-    const { isConfigured, sendMail } = require("./gmail2");
-    if (!isConfigured()) throw new Error("gmail2-send: private mailbox not configured");
-    const text = await readStdin();
-    process.stdout.write(JSON.stringify(await sendMail({ subject: process.argv[3], to: process.argv[4], text })) + "\n");
-  } else if (cmd === "plan") {
+  if (cmd === "plan") {
     await cmdPlan();
   } else if (cmd === "context") {
     await cmdContext();
@@ -717,13 +546,6 @@ async function main() {
   } else if (cmd === "log") {
     await appendLog({ action: "note", note: process.argv.slice(3).join(" ") });
     process.stdout.write(JSON.stringify({ logged: true }) + "\n");
-  } else if (cmd === "stage-draft") {
-    const arg = process.argv[3];
-    const jsonText = arg && arg.trim() ? arg : await readStdin();
-    if (!jsonText || !jsonText.trim()) throw new Error("stage-draft: provide draft JSON as an argument or on stdin");
-    await cmdStageDraft(jsonText);
-  } else if (cmd === "promote") {
-    await cmdPromote();
   } else {
     process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | weather [place|lat,lon] | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] [query] | gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);

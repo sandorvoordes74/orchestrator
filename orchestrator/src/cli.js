@@ -218,6 +218,82 @@ async function cmdStateSet(key, value, append) {
   process.stdout.write(JSON.stringify({ key, chars: v.length, updated: now }) + "\n");
 }
 
+// Task triage memory: one row per task in the '_triage' tab (id | title | lastTriaged |
+// verdict | note | context | nextCheck | fingerprint). `triage-queue` returns the tasks
+// that need a (deep) triage now, most pressing first, plus the remembered verdicts of all
+// tasks; `triage-set` stores new verdicts. A task is re-triaged when its data changed
+// (fingerprint), its nextCheck date arrived, or it was not triaged today.
+const TRIAGE_TAB = "_triage";
+const TRIAGE_HEAD = ["Id", "Title", "LastTriaged", "Verdict", "Note", "Context", "NextCheck", "Fingerprint"];
+const _todayLocal = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Amsterdam" }).format(new Date());
+const _fp = (t) => [t.task, t.deadline, t.reviewDate, t.commitDate, t.importance, t.urgency, t.prio ? "*" : ""].map((x) => String(x || "").trim()).join("|");
+async function _triageRows() {
+  const { ensureTab, readTab } = require("./sheets");
+  await ensureTab(TRIAGE_TAB, TRIAGE_HEAD);
+  return readTab(TRIAGE_TAB);
+}
+async function cmdTriageQueue(n) {
+  const { tasks } = await getTasks();
+  const today = _todayLocal(), y = today.slice(0, 4);
+  const days = (iso) => (iso ? Math.round((Date.parse(iso) - Date.parse(today)) / 86400000) : null);
+  const mem = {};
+  for (const r of (await _triageRows()).slice(1)) if (r[0]) mem[r[0]] = { last: r[2] || "", verdict: r[3] || "", note: r[4] || "", context: r[5] || "", nextCheck: r[6] || "", fp: r[7] || "" };
+  const rows = tasks.map((t) => {
+    const deadline = _isoDate(t.deadline, y), reviewDate = _isoDate(t.reviewDate, y), commitDate = _isoDate(t.commitDate, y);
+    const dd = days(deadline), m = mem[t.id];
+    const changed = !!m && m.fp !== _fp(t);
+    const triagedToday = !!m && String(m.last).slice(0, 10) === today && !changed;
+    const checkDue = !!m && !!m.nextCheck && m.nextCheck <= today;
+    // lower = more pressing
+    let rank = 9;
+    if (!m) rank = 0; else if (changed) rank = 1;
+    if (dd !== null && dd < 0) rank = Math.min(rank, 2); else if (dd !== null && dd <= 3) rank = Math.min(rank, 3);
+    if (reviewDate && days(reviewDate) <= 0) rank = Math.min(rank, 4);
+    if (checkDue) rank = Math.min(rank, 5);
+    return {
+      t, deadline, reviewDate, commitDate, dd, m, triagedToday, rank,
+      last: m ? m.last : "",
+    };
+  });
+  const queue = rows.filter((r) => !r.triagedToday || r.rank <= 1)
+    .sort((a, b) => a.rank - b.rank || (a.dd ?? 9999) - (b.dd ?? 9999) || String(a.last).localeCompare(String(b.last)))
+    .slice(0, n)
+    .map((r) => ({
+      id: r.t.id, task: r.t.task, label: r.t.label, taskType: r.t.taskType || "", starred: !!r.t.prio,
+      importance: r.t.importance, urgency: r.t.urgency, effort: r.t.effort, energy: r.t.energy || "", requirements: r.t.requirements || "",
+      deadline: r.deadline, daysToDeadline: r.dd, reviewDate: r.reviewDate, commitDate: r.commitDate, created: _isoDate(r.t.createdDate, y),
+      links: (r.t.context || "").split("\n").map((u) => u.trim()).filter(Boolean),
+      why: ["never triaged", "changed since last triage", "overdue", "due within 3 days", "review date reached", "planned re-check"][r.rank] || "oldest triage",
+      memory: r.m ? { last: r.m.last, verdict: r.m.verdict, note: r.m.note, context: r.m.context, nextCheck: r.m.nextCheck } : null,
+    }));
+  const memory = rows.map((r) => [r.t.id, (r.t.task || "").replace(/\s*\n+\s*/g, " / ").slice(0, 70), r.deadline ? `deadline ${r.deadline} (${r.dd}d)` : "", r.m ? `${String(r.m.last).slice(0, 10)} ${r.m.verdict}: ${String(r.m.note).slice(0, 90)}` : "not triaged"].filter(Boolean).join(" | "));
+  const stats = { open: rows.length, overdue: rows.filter((r) => r.dd !== null && r.dd < 0).length, dueWithin3: rows.filter((r) => r.dd !== null && r.dd >= 0 && r.dd <= 3).length,
+    neverTriaged: rows.filter((r) => !r.m).length, triagedToday: rows.filter((r) => r.triagedToday).length };
+  process.stdout.write(JSON.stringify({ today, stats, queue, memory }, null, 1) + "\n");
+}
+async function cmdTriageSet(jsonText) {
+  const { getSheetsClient } = require("./sheets");
+  const { SPREADSHEET_ID } = require("./config");
+  let items = JSON.parse(jsonText); if (!Array.isArray(items)) items = [items];
+  const { tasks } = await getTasks();
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const rows = await _triageRows();
+  const keep = [TRIAGE_HEAD]; const idx = new Map();
+  for (const r of rows.slice(1)) if (r[0] && byId.has(r[0])) { idx.set(r[0], keep.length); keep.push(r); } // drop rows of deleted tasks
+  const now = new Date().toISOString(); const done = [], missing = [];
+  for (const it of items) {
+    const t = byId.get(String(it.id || "").trim());
+    if (!t) { missing.push(it.id); continue; }
+    const row = [t.id, String(t.task || "").slice(0, 120), now, String(it.verdict || "").slice(0, 40), String(it.note || "").slice(0, 500), String(it.context || "").slice(0, 1500), String(it.nextCheck || "").slice(0, 10), _fp(t)];
+    if (idx.has(t.id)) keep[idx.get(t.id)] = row; else { idx.set(t.id, keep.length); keep.push(row); }
+    done.push(t.id);
+  }
+  const sh = await getSheetsClient();
+  await sh.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: `'${TRIAGE_TAB}'` });
+  await sh.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `'${TRIAGE_TAB}'!A1`, valueInputOption: "RAW", requestBody: { values: keep } });
+  process.stdout.write(JSON.stringify({ triaged: done.length, missing, remembered: keep.length - 1 }) + "\n");
+}
+
 // Home-screen widget feed: overwrite the '_widget' tab with a small Key|Value list
 // (read by an Apps Script web app that the phone widget polls). Input: JSON on stdin,
 // e.g. {"mode":"hourly","title":"09:00-10:00","weather":"...","next":["...","..."]}.
@@ -569,6 +645,12 @@ async function main() {
     if (!process.argv[3]) throw new Error(cmd + ": provide a key (value on stdin)");
     const val = (await readStdin()).replace(/\s+$/, "");
     await cmdStateSet(process.argv[3], val, cmd === "state-append");
+  } else if (cmd === "triage-queue") {
+    await cmdTriageQueue(Number(process.argv[3]) || 10);
+  } else if (cmd === "triage-set") {
+    const jsonText = await readStdin();
+    if (!jsonText || !jsonText.trim()) throw new Error("triage-set: provide [{id,verdict,note,context,nextCheck}] JSON on stdin");
+    await cmdTriageSet(jsonText);
   } else if (cmd === "widget-set") {
     const jsonText = await readStdin();
     if (!jsonText || !jsonText.trim()) throw new Error("widget-set: provide the widget JSON on stdin");
@@ -593,7 +675,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

@@ -381,6 +381,10 @@ async function updateTaskFields(taskId, fields) {
   // Urgency is a matrix input; re-asserting it resets the urgency clock (urgencySetDate=today).
   let bumpUrgency = false;
   if (has("urgency")) { push(m.urgency, "urgency", _hml(f.urgency)); bumpUrgency = true; }
+  // Explicit clearing of dates, e.g. {clear:["deadline"]} ("remove the deadline").
+  for (const k of Array.isArray(f.clear) ? f.clear : []) {
+    if (["deadline", "reviewDate", "commitDate"].includes(k) && !has(k)) push(m[k], k, "");
+  }
   if (!plan.length) return { updated: false, reason: "no-fields" };
 
   for (let i = 1; i < rows.length; i++) {

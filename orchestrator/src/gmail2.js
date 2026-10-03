@@ -77,6 +77,27 @@ async function listTodo() {
   return { email, todoId, listedId, items };
 }
 
+// One private thread with its messages (for task triage: what happened since?).
+// Accepts a thread id or a Gmail permalink containing it.
+async function getThread(idOrUrl) {
+  const g = gmail();
+  const id = String(idOrUrl).split(/[#/]/).filter(Boolean).pop().split("?")[0];
+  const t = await g.users.threads.get({ userId: "me", id, format: "full" });
+  const msgs = (t.data.messages || []).map((m) => {
+    const texts = [];
+    collectText(m.payload, texts);
+    return {
+      from: header(m.payload.headers, "From"),
+      to: header(m.payload.headers, "To"),
+      date: header(m.payload.headers, "Date"),
+      subject: header(m.payload.headers, "Subject"),
+      labels: m.labelIds || [],
+      text: texts.filter((x) => x.mt === "text/plain").map((x) => x.text).join("\n").slice(0, 1500),
+    };
+  });
+  return { threadId: id, messages: msgs.slice(-6), messageCount: msgs.length };
+}
+
 async function relabel(threadId) {
   const g = gmail();
   const { todoId, listedId } = await ensureLabels(g);
@@ -170,4 +191,4 @@ async function sendMail({ to, subject, text }) {
   return { sent: true, to: rcpt, id: r.data.id };
 }
 
-module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview, archive, draftReply };
+module.exports = { isConfigured, listTodo, relabel, sendMail, inboxOverview, archive, draftReply, getThread };

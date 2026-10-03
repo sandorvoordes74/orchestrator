@@ -601,6 +601,11 @@ async function main() {
     const g2 = require("./gmail2");
     if (!g2.isConfigured()) { process.stdout.write(JSON.stringify({ configured: false }) + "\n"); return; }
     process.stdout.write(JSON.stringify({ configured: true, ...(await g2.inboxOverview(Number(process.argv[3]) || 25)) }, null, 2) + "\n");
+  } else if (cmd === "gmail2-thread") {
+    const g2 = require("./gmail2");
+    if (!g2.isConfigured()) { process.stdout.write(JSON.stringify({ configured: false }) + "\n"); return; }
+    if (!process.argv[3]) throw new Error("gmail2-thread: provide a threadId or private Gmail link");
+    process.stdout.write(JSON.stringify(await g2.getThread(process.argv[3]), null, 1) + "\n");
   } else if (cmd === "gmail2-archive") {
     // owner-confirmed: archive private-mailbox threads (reversible). usage: gmail2-archive <threadId,...>
     const ids = process.argv.slice(3).flatMap((a) => a.split(",")).map((x) => x.trim()).filter(Boolean);
@@ -675,7 +680,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

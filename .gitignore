@@ -41,3 +41,8 @@ orchestrator/mint-gmail2-token.js
 
 # Home-screen widget lives in a separate PRIVATE repo (assistant-widget)
 /widget/
+
+# Local smoke-test scripts (never commit)
+orchestrator/src/read.js
+orchestrator/src/write.js
+orchestrator/ROUTINE_PROMPT.md

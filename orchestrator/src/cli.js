@@ -294,6 +294,48 @@ async function cmdTriageSet(jsonText) {
   process.stdout.write(JSON.stringify({ triaged: done.length, missing, remembered: keep.length - 1 }) + "\n");
 }
 
+// Weather from Open-Meteo (KNMI/DWD models for NL; no key needed): current conditions, the next
+// 12 hours and today's range for a place name (default Utrecht) or "lat,lon".
+const _WMO = { 0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "overcast", 45: "fog", 48: "fog", 51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
+  61: "light rain", 63: "rain", 65: "heavy rain", 71: "light snow", 73: "snow", 75: "heavy snow", 80: "light showers", 81: "showers", 82: "heavy showers", 95: "thunderstorm", 96: "thunderstorm with hail", 99: "thunderstorm with hail" };
+function _getJson(url) {
+  return new Promise((resolve, reject) => {
+    require("https").get(url, (res) => { let c = ""; res.on("data", (d) => (c += d)); res.on("end", () => {
+      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} from ${new URL(url).host}`));
+      try { resolve(JSON.parse(c)); } catch (e) { reject(e); } }); }).on("error", reject);
+  });
+}
+async function cmdWeather(place) {
+  let lat = 52.0907, lon = 5.1214, name = "Utrecht";
+  const m = String(place || "").match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (m) { lat = +m[1]; lon = +m[2]; name = place; }
+  else if (place && place.trim()) {
+    const g = await _getJson(`https://geocoding-api.open-meteo.com/v1/search?count=1&language=nl&name=${encodeURIComponent(place.trim())}`);
+    const r = (g.results || [])[0]; if (!r) throw new Error(`weather: place not found: ${place}`);
+    lat = r.latitude; lon = r.longitude; name = `${r.name}${r.admin1 ? ", " + r.admin1 : ""}`;
+  }
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&timezone=Europe%2FAmsterdam&forecast_days=2`
+    + "&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_gusts_10m"
+    + "&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m"
+    + "&daily=temperature_2m_min,temperature_2m_max,precipitation_sum,precipitation_probability_max,sunrise,sunset";
+  const w = await _getJson(url);
+  const now = w.current || {};
+  const start = Math.max(0, (w.hourly.time || []).findIndex((t) => t >= String(now.time || "").slice(0, 13)));
+  const hours = (w.hourly.time || []).slice(start, start + 12).map((t, k) => {
+    const i = start + k;
+    return { time: t.slice(11, 16), temp: Math.round(w.hourly.temperature_2m[i]), rainChance: w.hourly.precipitation_probability[i], rainMm: w.hourly.precipitation[i],
+      sky: _WMO[w.hourly.weather_code[i]] || String(w.hourly.weather_code[i]), wind: Math.round(w.hourly.wind_speed_10m[i]) };
+  });
+  const d = w.daily || {};
+  process.stdout.write(JSON.stringify({
+    source: "open-meteo.com", place: name,
+    now: { time: now.time, temp: Math.round(now.temperature_2m), feelsLike: Math.round(now.apparent_temperature), sky: _WMO[now.weather_code] || now.weather_code, rainMm: now.precipitation, wind: Math.round(now.wind_speed_10m), gusts: Math.round(now.wind_gusts_10m) },
+    today: { min: Math.round(d.temperature_2m_min[0]), max: Math.round(d.temperature_2m_max[0]), rainMm: d.precipitation_sum[0], rainChanceMax: d.precipitation_probability_max[0], sunrise: String(d.sunrise[0]).slice(11), sunset: String(d.sunset[0]).slice(11) },
+    tomorrow: { min: Math.round(d.temperature_2m_min[1]), max: Math.round(d.temperature_2m_max[1]), rainMm: d.precipitation_sum[1], rainChanceMax: d.precipitation_probability_max[1] },
+    next12h: hours,
+  }, null, 1) + "\n");
+}
+
 // Home-screen widget feed: overwrite the '_widget' tab with a small Key|Value list
 // (read by an Apps Script web app that the phone widget polls). Input: JSON on stdin,
 // e.g. {"mode":"hourly","title":"09:00-10:00","weather":"...","next":["...","..."]}.
@@ -657,6 +699,8 @@ async function main() {
     const jsonText = await readStdin();
     if (!jsonText || !jsonText.trim()) throw new Error("triage-set: provide [{id,verdict,note,context,nextCheck}] JSON on stdin");
     await cmdTriageSet(jsonText);
+  } else if (cmd === "weather") {
+    await cmdWeather(process.argv.slice(3).join(" "));
   } else if (cmd === "widget-set") {
     const jsonText = await readStdin();
     if (!jsonText || !jsonText.trim()) throw new Error("widget-set: provide the widget JSON on stdin");
@@ -681,7 +725,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | weather [place|lat,lon] | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

@@ -113,7 +113,9 @@ async function inboxOverview(max = 25) {
       messages: msgs.length,
     });
   }
-  return { query: q, estimate: list.data.resultSizeEstimate || threads.length, shown: items.length, items };
+  // Exact inbox totals (all inbox threads, incl. todo/listed) from the INBOX label counters.
+  const inbox = (await g.users.labels.get({ userId: "me", id: "INBOX" })).data || {};
+  return { query: q, inboxTotal: inbox.threadsTotal, inboxUnread: inbox.threadsUnread, estimate: list.data.resultSizeEstimate || threads.length, shown: items.length, items };
 }
 
 // Archive a thread (remove it from the inbox; reversible - it stays in All Mail).

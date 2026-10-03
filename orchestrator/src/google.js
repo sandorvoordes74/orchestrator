@@ -149,6 +149,7 @@ function gmailClient(getToken) {
       getProfile: () => call("GET", `${GMAIL}/profile`),
       labels: {
         list: () => call("GET", `${GMAIL}/labels`),
+        get: ({ id }) => call("GET", `${GMAIL}/labels/${enc(id)}`),
         create: ({ requestBody }) => call("POST", `${GMAIL}/labels`, requestBody),
       },
       threads: {

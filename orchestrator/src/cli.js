@@ -314,6 +314,7 @@ async function cmdWidgetSet(jsonText) {
   const sh = await getSheetsClient();
   await sh.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: `'${WIDGET_TAB}'` });
   await sh.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `'${WIDGET_TAB}'!A1`, valueInputOption: "RAW", requestBody: { values: rows } });
+  await appendLog({ action: "note", note: `widget updated (${data.mode || "-"}: ${String(data.title || "").slice(0, 40)}; next: ${String(Array.isArray(data.next) ? data.next[0] || "" : data.next || "").slice(0, 60)})` });
   process.stdout.write(JSON.stringify({ widget: rows.length - 2, updated: now }) + "\n");
 }
 

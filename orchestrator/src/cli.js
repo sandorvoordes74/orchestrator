@@ -643,7 +643,7 @@ async function main() {
   } else if (cmd === "gmail2-inbox") {
     const g2 = require("./gmail2");
     if (!g2.isConfigured()) { process.stdout.write(JSON.stringify({ configured: false }) + "\n"); return; }
-    process.stdout.write(JSON.stringify({ configured: true, ...(await g2.inboxOverview(Number(process.argv[3]) || 25)) }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify({ configured: true, ...(await g2.inboxOverview(Number(process.argv[3]) || 25, process.argv.slice(4).join(" "))) }, null, 2) + "\n");
   } else if (cmd === "gmail2-thread") {
     const g2 = require("./gmail2");
     if (!g2.isConfigured()) { process.stdout.write(JSON.stringify({ configured: false }) + "\n"); return; }
@@ -725,7 +725,7 @@ async function main() {
   } else if (cmd === "promote") {
     await cmdPromote();
   } else {
-    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | weather [place|lat,lon] | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] | gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
+    process.stderr.write("usage: cli.js <context | brief | show <id> | state-get <k> | state-set <k> | state-append <k> | state-prune [days] [lineDays] | triage-queue [n] | triage-set (json on stdin) | weather [place|lat,lon] | widget-set (json on stdin) | delete <id,...> | match '<json>' | upsert '<json>' | log <msg> | docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-inbox [n] [query] | gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> | gmail2-relabel <id> | plan>\n");
     process.exit(2);
   }
 }

@@ -112,10 +112,10 @@ async function relabel(threadId) {
 // Read-only overview of the private inbox backlog: threads still in the inbox that are
 // neither tagged todo nor already listed. Used by the day program to size an
 // inbox-processing block. Headers only (no bodies).
-async function inboxOverview(max = 25) {
+async function inboxOverview(max = 25, query) {
   const g = gmail();
   const email = (await g.users.getProfile({ userId: "me" })).data.emailAddress;
-  const q = "in:inbox -label:todo -label:listed";
+  const q = query && String(query).trim() ? String(query).trim() : "in:inbox -label:todo -label:listed";
   const list = await g.users.threads.list({ userId: "me", q, maxResults: max });
   const threads = list.data.threads || [];
   const items = [];

@@ -4,7 +4,7 @@
 // runs these from Bash; every command prints JSON (or plain text) on stdout. All sheet I/O
 // goes through the service account (key from env). Run without arguments to list commands.
 //
-//   Tasks:      context | brief | plan | show <id> | match '<json>' | upsert '<json>' | delete <id,...>
+//   Tasks:      context | brief | plan | do-now '<json>' [n] | show <id> | match '<json>' | upsert '<json>' | delete <id,...>
 //   Sources:    docs-scan | docs-mark '<json>' | gmail2-scan | gmail2-relabel <id> | gmail2-inbox [n] [query]
 //               gmail2-thread <id|link> | gmail2-archive <id,...> | gmail2-draft <id> (body on stdin)
 //   Assistant:  state-get/state-set/state-append <key> | state-prune [days] [lineDays] | facts | facts-add '<json>' | facts-remove '<part>' | lists [tab] | traffic <from> <to> [when]
@@ -19,7 +19,8 @@ const crypto = require("crypto");
 const HELP = `Commands (node src/cli.js <command> ...). Every command prints JSON or plain text.
 Tasks
   context                         labels, dedup URLs and tasks for intake
-  plan | brief                    open tasks with all planning fields | one line per task
+  plan | brief                    open tasks in the task app's order (appRank, appTier, appScore) | one line per task
+  do-now '<json>' [n]             the app's Do Now pick for a context: {"place":"home|office|out|car|driving|transit","energy":"LOW|MEDIUM|HIGH","minutes":30}
   show <id>                       one task in full
   match '{"sourceUrls":[..]}'     existing tasks that hold one of these links
   upsert '<json>'                 create a task, or append to one (appendToId, updatedTitle, fieldUpdates)
@@ -86,22 +87,54 @@ function _isoDate(s, todayY) {
   if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
   return "";
 }
-async function cmdPlan() {
+// Every task normalized and scored the way the task app does (src/score.js), in the app's
+// list order. The work/private time windows come from memory key 'scoring:timing' (JSON,
+// see score.js DEFAULT_TIMING) when set.
+// Without src/score.js (an older setup script) the tasks come unscored, in sheet order.
+function _scoreLib() { try { return require("./score"); } catch { return null; } }
+async function _scoredTasks() {
+  const score = _scoreLib();
   const { tasks } = await getTasks();
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Amsterdam" }).format(new Date()); // YYYY-MM-DD
-  const y = today.slice(0, 4);
+  const now = score ? score.localNow() : { today: _todayLocal(), time: "" }, today = now.today, y = today.slice(0, 4);
+  let timing = null;
+  if (score) try { timing = JSON.parse((await _stateGet("scoring:timing")) || "null"); } catch { timing = null; }
   const days = (iso) => (iso ? Math.round((Date.parse(iso) - Date.parse(today)) / 86400000) : null);
-  const out = tasks.map((t) => {
-    const deadline = _isoDate(t.deadline, y), reviewDate = _isoDate(t.reviewDate, y), commitDate = _isoDate(t.commitDate, y), created = _isoDate(t.createdDate, y);
-    return {
+  const rows = tasks.map((t) => {
+    const n = {
       id: t.id, task: t.task, label: t.label, taskType: t.taskType || "", starred: !!t.prio,
       importance: t.importance, urgency: t.urgency, effort: t.effort, energy: t.energy || "", requirements: t.requirements || "",
-      deadline, daysToDeadline: days(deadline), reviewDate, reviewDue: !!reviewDate && days(reviewDate) <= 0,
-      commitDate, committedToday: commitDate === today, ageDays: created ? -days(created) : null,
-      links: (t.context || "").split("\n").filter((x) => x.trim()).length,
+      deadline: _isoDate(t.deadline, y), reviewDate: _isoDate(t.reviewDate, y), commitDate: _isoDate(t.commitDate, y),
+      created: _isoDate(t.createdDate, y), urgencySet: _isoDate(t.urgencySetDate, y),
     };
+    n.committedToday = n.commitDate === today;
+    return { t, n, ...n, ...(score ? score.baseScore(n, now, timing) : {}) };
   });
-  process.stdout.write(JSON.stringify({ today, taskCount: out.length, tasks: out }, null, 1) + "\n");
+  if (score) rows.sort(score.listOrder).forEach((r, i) => (r.rank = i + 1));
+  return { now, today, timingSource: !score ? "unavailable: src/score.js missing" : timing ? "scoring:timing" : "default", rows, days };
+}
+
+async function cmdPlan() {
+  const { now, today, timingSource, rows, days } = await _scoredTasks();
+  const estMinutes = (_scoreLib() || {}).estMinutes || (() => null);
+  const out = rows.map(({ t, n, score, tier, rank }) => ({
+    id: n.id, task: n.task, label: n.label, taskType: n.taskType, starred: n.starred,
+    importance: n.importance, urgency: n.urgency, effort: n.effort, energy: n.energy, requirements: n.requirements,
+    deadline: n.deadline, daysToDeadline: days(n.deadline), reviewDate: n.reviewDate, reviewDue: !!n.reviewDate && days(n.reviewDate) <= 0,
+    commitDate: n.commitDate, committedToday: n.committedToday, ageDays: n.created ? -days(n.created) : null,
+    appRank: rank, appTier: tier, appScore: score, estMin: estMinutes(n),
+    links: (t.context || "").split("\n").filter((x) => x.trim()).length,
+  }));
+  process.stdout.write(JSON.stringify({ today, appOrder: { at: `${today} ${now.time}`, timing: timingSource }, taskCount: out.length, tasks: out }, null, 1) + "\n");
+}
+
+// The app's Do Now pick for a context: node src/cli.js do-now '{"place":"home","energy":"LOW","minutes":30}' [n]
+async function cmdDoNow(jsonText, n) {
+  if (!_scoreLib()) throw new Error("do-now needs src/score.js - the setup script is older than this code");
+  const { now, timingSource, rows } = await _scoredTasks();
+  const ctx = JSON.parse(jsonText || "{}");
+  const { feasible, excluded } = require("./score").doNow(rows.map((r) => ({ ...r.n, score: r.score, tier: r.tier, rank: r.rank })), ctx, now);
+  const top = feasible.slice(0, n).map((s) => ({ id: s.id, task: s.task, label: s.label, appRank: s.rank, appTier: s.tier, appScore: s.score, adjusted: s.adjusted, adjustments: s.adjustments, estMin: s.estMin, energy: s.energy, requirements: s.requirements }));
+  process.stdout.write(JSON.stringify({ context: ctx, timing: timingSource, feasible: feasible.length, excluded, top }, null, 1) + "\n");
 }
 
 async function cmdContext() {
@@ -286,7 +319,8 @@ async function _triageRows() {
   return readTab(TRIAGE_TAB);
 }
 async function cmdTriageQueue(n) {
-  const { tasks } = await getTasks();
+  const { rows: scored } = await _scoredTasks();
+  const tasks = scored.map((s) => s.t), app = new Map(scored.map((s) => [s.t.id, s]));
   const today = _todayLocal(), y = today.slice(0, 4);
   const days = (iso) => (iso ? Math.round((Date.parse(iso) - Date.parse(today)) / 86400000) : null);
   const mem = {};
@@ -309,17 +343,18 @@ async function cmdTriageQueue(n) {
     };
   });
   const queue = rows.filter((r) => !r.triagedToday || r.rank <= 1)
-    .sort((a, b) => a.rank - b.rank || (a.dd ?? 9999) - (b.dd ?? 9999) || String(a.last).localeCompare(String(b.last)))
+    .sort((a, b) => a.rank - b.rank || app.get(a.t.id).rank - app.get(b.t.id).rank || String(a.last).localeCompare(String(b.last)))
     .slice(0, n)
     .map((r) => ({
       id: r.t.id, task: r.t.task, label: r.t.label, taskType: r.t.taskType || "", starred: !!r.t.prio,
       importance: r.t.importance, urgency: r.t.urgency, effort: r.t.effort, energy: r.t.energy || "", requirements: r.t.requirements || "",
       deadline: r.deadline, daysToDeadline: r.dd, reviewDate: r.reviewDate, commitDate: r.commitDate, created: _isoDate(r.t.createdDate, y),
+      appRank: app.get(r.t.id).rank, appTier: app.get(r.t.id).tier, appScore: app.get(r.t.id).score, appParts: app.get(r.t.id).parts,
       links: (r.t.context || "").split("\n").map((u) => u.trim()).filter(Boolean),
       why: ["never triaged", "changed since last triage", "overdue", "due within 3 days", "review date reached", "planned re-check"][r.rank] || "oldest triage",
       memory: r.m ? { last: r.m.last, verdict: r.m.verdict, note: r.m.note, context: r.m.context, nextCheck: r.m.nextCheck } : null,
     }));
-  const memory = rows.map((r) => [r.t.id, (r.t.task || "").replace(/\s*\n+\s*/g, " / ").slice(0, 70), r.deadline ? `deadline ${r.deadline} (${r.dd}d)` : "", r.m ? `${String(r.m.last).slice(0, 10)} ${r.m.verdict}: ${String(r.m.note).slice(0, 90)}` : "not triaged"].filter(Boolean).join(" | "));
+  const memory = rows.map((r) => [r.t.id, (r.t.task || "").replace(/\s*\n+\s*/g, " / ").slice(0, 70), app.get(r.t.id).rank ? `app #${app.get(r.t.id).rank} (${app.get(r.t.id).score})` : "", r.deadline ? `deadline ${r.deadline} (${r.dd}d)` : "", r.m ? `${String(r.m.last).slice(0, 10)} ${r.m.verdict}: ${String(r.m.note).slice(0, 90)}` : "not triaged"].filter(Boolean).join(" | "));
   const stats = { open: rows.length, overdue: rows.filter((r) => r.dd !== null && r.dd < 0).length, dueWithin3: rows.filter((r) => r.dd !== null && r.dd >= 0 && r.dd <= 3).length,
     neverTriaged: rows.filter((r) => !r.m).length, triagedToday: rows.filter((r) => r.triagedToday).length };
   process.stdout.write(JSON.stringify({ today, stats, queue, memory }, null, 1) + "\n");
@@ -608,6 +643,8 @@ async function main() {
   const cmd = process.argv[2];
   if (cmd === "plan") {
     await cmdPlan();
+  } else if (cmd === "do-now") {
+    await cmdDoNow(process.argv[3], Number(process.argv[4]) || 8);
   } else if (cmd === "context") {
     await cmdContext();
   } else if (cmd === "gmail2-scan") {

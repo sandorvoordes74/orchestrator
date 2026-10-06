@@ -36,7 +36,7 @@ Memory and knowledge
   facts | facts-add '{"section","fact"[,"replaces"]}' | facts-remove '<part>'
   rules | rules-add '{"section","rule"[,"replaces"]}' | rules-remove '<part>'
   module <name...> | modules | module-set <name>           instruction modules (text on stdin)
-  widget-set                      widget feed JSON on stdin (only the given keys change)
+  widget-set [--sheet <id> --tab <tab>]   app feed JSON on stdin (only the given keys change)
   log <message>                   one line in the log tab
 Outside world
   weather [place|lat,lon]         forecast (default PA_HOME)
@@ -399,25 +399,33 @@ async function cmdWeather(place) {
 const WIDGET_TAB = "_widget";
 // Merges into what is there: keys in the JSON are replaced, other keys stay (so the program
 // alone can be refreshed after an interactive change). "updated" is always set to now.
-async function cmdWidgetSet(jsonText) {
-  const { getSheetsClient, ensureTab, readTab } = require("./sheets");
+// Target: by default the '_widget' tab of SPREADSHEET_ID; --sheet <id> --tab <name> writes one
+// app feed in another spreadsheet (one tab per person; the tab is created when missing).
+async function cmdWidgetSet(jsonText, target) {
+  const { getSheetsClient } = require("./sheets");
   const { SPREADSHEET_ID } = require("./config");
+  const spreadsheetId = (target && target.sheet) || SPREADSHEET_ID;
+  const tab = (target && target.tab) || WIDGET_TAB;
   const data = JSON.parse(jsonText);
   const now = new Date().toISOString();
-  await ensureTab(WIDGET_TAB, ["Key", "Value"]);
+  const sh = await getSheetsClient();
+  const meta = await sh.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
+  if (!((meta.data || meta).sheets || []).some((s) => s.properties.title === tab)) {
+    await sh.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: tab } } }] } });
+  }
+  const current = await sh.spreadsheets.values.get({ spreadsheetId, range: `'${tab}'` });
   const merged = new Map();
-  for (const r of (await readTab(WIDGET_TAB)).slice(1)) if (r[0] && r[0] !== "updated") merged.set(r[0], r[1] || "");
+  for (const r of ((current.data || current).values || []).slice(1)) if (r[0] && r[0] !== "updated") merged.set(r[0], r[1] || "");
   for (const [k, v] of Object.entries(data)) {
     if (k === "updated") continue;
     const val = Array.isArray(v) ? v.map(String).join("\n") : v == null ? "" : String(v);
     merged.set(k, val.slice(0, 6000));
   }
   const rows = [["Key", "Value"], ["updated", now], ...merged.entries()];
-  const sh = await getSheetsClient();
-  await sh.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: `'${WIDGET_TAB}'` });
-  await sh.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `'${WIDGET_TAB}'!A1`, valueInputOption: "RAW", requestBody: { values: rows } });
-  await appendLog({ action: "note", note: `widget updated (${Object.keys(data).join(",").slice(0, 60)}; next: ${String(Array.isArray(data.next) ? data.next[0] || "" : data.next || "").slice(0, 60)})` });
-  process.stdout.write(JSON.stringify({ widget: rows.length - 2, changed: Object.keys(data).length, updated: now }) + "\n");
+  await sh.spreadsheets.values.clear({ spreadsheetId, range: `'${tab}'` });
+  await sh.spreadsheets.values.update({ spreadsheetId, range: `'${tab}'!A1`, valueInputOption: "RAW", requestBody: { values: rows } });
+  await appendLog({ action: "note", note: `widget ${tab} updated (${Object.keys(data).join(",").slice(0, 60)}; next: ${String(Array.isArray(data.next) ? data.next[0] || "" : data.next || "").slice(0, 60)})` });
+  process.stdout.write(JSON.stringify({ widget: rows.length - 2, tab, changed: Object.keys(data).length, updated: now }) + "\n");
 }
 
 // Housekeeping for the assistant memory: drop per-day keys ("<name>:YYYY-MM-DD") older
@@ -759,9 +767,14 @@ async function main() {
     await appendLog({ action: "tado", source: process.argv[3], note: `owner-confirmed: ${r.done}` });
     process.stdout.write(JSON.stringify(r, null, 1) + "\n");
   } else if (cmd === "widget-set") {
+    // usage: widget-set [--sheet <spreadsheet id> --tab <tab>]  (JSON on stdin)
+    const a = process.argv.slice(3);
+    const opt = (n) => { const i = a.indexOf(n); return i >= 0 ? a[i + 1] : undefined; };
+    const target = { sheet: opt("--sheet"), tab: opt("--tab") };
+    if (target.sheet && !target.tab) throw new Error("widget-set: --sheet needs --tab <tab>");
     const jsonText = await readStdin();
     if (!jsonText || !jsonText.trim()) throw new Error("widget-set: provide the widget JSON on stdin");
-    await cmdWidgetSet(jsonText);
+    await cmdWidgetSet(jsonText, target);
   } else if (cmd === "state-prune") {
     await cmdStatePrune(Number(process.argv[3]) || 7, Number(process.argv[4]) || 14);
   } else if (cmd === "show") {

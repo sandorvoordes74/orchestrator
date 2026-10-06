@@ -1,0 +1,8 @@
+{
+  "name": "task-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Personal-assistant routine CLI: task intake (Gmail/Slack/Docs) and hourly briefing support for a Google Sheet task list. Zero dependencies.",
+  "dependencies": {}
+}

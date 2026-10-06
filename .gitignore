@@ -1,0 +1,33 @@
+# OS / editor
+.DS_Store
+
+# Claude Code local config
+.claude/
+
+# Dependencies (the code has none, but never commit them)
+node_modules/
+
+# Logs
+*.log
+
+# Local-only tools and test scripts (never commit)
+mint-gmail2-token.js
+src/read.js
+src/write.js
+
+# NEVER commit credentials - they live only in the cloud environment's variables
+service-account*.json
+*-key.json
+*credentials*.json
+*.pem
+.env
+.env.*
+task-manager-*.json
+*.p12
+
+# Local-only material outside the code (never commit)
+/openspec/
+/replit-code/
+/widget/
+/orchestrator/
+*.tgz

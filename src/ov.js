@@ -117,11 +117,22 @@ async function disruptions(stations) {
   return { stations: codes, disruptions: out.slice(0, 10) };
 }
 
-// Live departures at one or more bus/tram stops (OVapi timing point codes), optionally one line.
+// Live departures at one or more bus/tram stops (OVapi timing point codes), optionally one line,
+// plus the operator's messages for those stops (detours, a stop that is skipped or moved: KV15
+// "GeneralMessages") and buses marked cancelled at the stop. A bus that skips a stop because of
+// a detour usually does not show up at all - the messages are then the only clue.
+const _msgText = (m) => [m.MessageContent, m.ReasonContent, m.EffectContent, m.MeasureContent, m.AdviceContent]
+  .filter((x) => x && String(x).trim()).map((x) => String(x).trim()).filter((x, i, a) => a.indexOf(x) === i).join(" - ");
 async function departures(stops, line) {
   const r = await _get(`${OVAPI}/tpc/${encodeURIComponent(String(stops).replace(/\s+/g, ""))}`);
   const out = [];
+  const messages = [];
   for (const [code, stop] of Object.entries(r || {})) {
+    for (const m of Object.values(stop.GeneralMessages || {})) {
+      const text = _msgText(m || {});
+      if (!text) continue;
+      messages.push({ stop: (stop.Stop && stop.Stop.TimingPointName) || code, text, from: _hm(_ams(m.MessageStartTime)), until: _hm(_ams(m.MessageEndTime)), type: m.MessageType || null });
+    }
     for (const p of Object.values(stop.Passes || {})) {
       if (line && String(p.LinePublicNumber) !== String(line)) continue;
       const planned = _ams(p.TargetDepartureTime), expected = _ams(p.ExpectedDepartureTime) || planned;
@@ -134,12 +145,14 @@ async function departures(stops, line) {
         expected: _hm(expected),
         late: _late(planned, expected),
         status: p.TripStopStatus, // PLANNED, DRIVING, ARRIVED, PASSED, CANCEL, ...
+        ...(p.TripStopStatus === "CANCEL" ? { cancelled: true } : {}),
         sort: Date.parse(expected),
       });
     }
   }
   out.sort((x, y) => (x.sort < y.sort ? -1 : 1));
-  return { departures: out.slice(0, 8).map(({ sort, ...d }) => d) };
+  const deps = out.slice(0, 8).map(({ sort, ...d }) => d);
+  return { departures: deps, messages, warning: messages.length || deps.some((d) => d.cancelled) ? "check messages / cancelled trips" : null };
 }
 
 module.exports = { nsConfigured, trips, disruptions, departures };

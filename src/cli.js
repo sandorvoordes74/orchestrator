@@ -349,7 +349,7 @@ async function cmdTriageSet(jsonText) {
 
 // Weather from Open-Meteo (KNMI/DWD models for NL; no key needed): current conditions, the next
 // 12 hours and today's range for a place name or "lat,lon" (default: PA_HOME), in the local
-// time of that place.
+// time of that place - plus a radar nowcast for the next 2 hours where Buienradar covers it.
 const _WMO = { 0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "overcast", 45: "fog", 48: "fog", 51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
   61: "light rain", 63: "rain", 65: "heavy rain", 71: "light snow", 73: "snow", 75: "heavy snow", 80: "light showers", 81: "showers", 82: "heavy showers", 95: "thunderstorm", 96: "thunderstorm with hail", 99: "thunderstorm with hail" };
 function _getJson(url) {
@@ -358,6 +358,40 @@ function _getJson(url) {
       if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} from ${new URL(url).host}`));
       try { resolve(JSON.parse(c)); } catch (e) { reject(e); } }); }).on("error", reject);
   });
+}
+// Radar nowcast for the next 2 hours in 5-minute steps (Buienradar, Netherlands and Belgium only,
+// free for personal use). Each line of the reply is "<value>|HH:MM" in local time; mm/h =
+// 10^((value-109)/32), 0 = dry. Returns null outside the covered area or when unreachable.
+function _getText(url) {
+  return new Promise((resolve, reject) => {
+    require("https").get(url, { timeout: 15000 }, (res) => { let c = ""; res.on("data", (d) => (c += d)); res.on("end", () => {
+      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} from ${new URL(url).host}`)); resolve(c); }); })
+      .on("timeout", function () { this.destroy(new Error("timeout")); }).on("error", reject);
+  });
+}
+async function _nowcast(lat, lon) {
+  if (!(lat > 49.5 && lat < 53.8 && lon > 2.4 && lon < 7.4)) return null;
+  let raw;
+  try { raw = await _getText(`https://gpsgadget.buienradar.nl/data/raintext?lat=${lat.toFixed(2)}&lon=${lon.toFixed(2)}`); }
+  catch (e) { return { source: "buienradar.nl", error: e.message }; }
+  const steps = raw.split(/\r?\n/).map((l) => l.trim().match(/^(\d+)\|(\d{2}:\d{2})$/)).filter(Boolean)
+    .map((m) => ({ time: m[2], mmh: +m[1] ? Math.round(Math.pow(10, (+m[1] - 109) / 32) * 10) / 10 : 0 }));
+  if (!steps.length) return { source: "buienradar.nl", error: "no data" };
+  const wet = steps.filter((s) => s.mmh >= 0.1);
+  const firstWet = steps.findIndex((s) => s.mmh >= 0.1);
+  const lastWet = steps.length - 1 - [...steps].reverse().findIndex((s) => s.mmh >= 0.1);
+  const level = (mm) => (mm < 0.1 ? "dry" : mm < 1 ? "light rain" : mm < 4 ? "moderate rain" : "heavy rain");
+  const max = wet.length ? Math.max(...wet.map((s) => s.mmh)) : 0;
+  return {
+    source: "buienradar.nl", from: steps[0].time, until: steps[steps.length - 1].time,
+    rainingNow: steps[0].mmh >= 0.1, rainStarts: firstWet > 0 ? steps[firstWet].time : null,
+    rainEnds: wet.length && lastWet < steps.length - 1 ? steps[lastWet + 1].time : null,
+    maxMmH: max, maxLevel: level(max), minutesWithRain: wet.length * 5,
+    summary: !wet.length ? `dry until ${steps[steps.length - 1].time}`
+      : firstWet === 0 ? `${level(steps[0].mmh)} now${wet.length < steps.length ? `, dry from ${steps[lastWet + 1] ? steps[lastWet + 1].time : "?"}` : ""} (max ${max} mm/h)`
+      : `dry until ${steps[firstWet].time}, then ${level(max)} (max ${max} mm/h)`,
+    wetSteps: wet.map((s) => `${s.time} ${s.mmh}`),
+  };
 }
 async function cmdWeather(place) {
   place = String(place || "").trim() || String(process.env.PA_HOME || "").trim();
@@ -389,6 +423,7 @@ async function cmdWeather(place) {
     today: { min: Math.round(d.temperature_2m_min[0]), max: Math.round(d.temperature_2m_max[0]), rainMm: d.precipitation_sum[0], rainChanceMax: d.precipitation_probability_max[0], sunrise: String(d.sunrise[0]).slice(11), sunset: String(d.sunset[0]).slice(11) },
     tomorrow: { min: Math.round(d.temperature_2m_min[1]), max: Math.round(d.temperature_2m_max[1]), rainMm: d.precipitation_sum[1], rainChanceMax: d.precipitation_probability_max[1] },
     next12h: hours,
+    nowcast: await _nowcast(lat, lon), // radar, next 2 hours (null outside NL/BE)
   }, null, 1) + "\n");
 }
 
